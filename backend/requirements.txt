@@ -1,0 +1,7 @@
+# 后端依赖
+fastapi==0.115.*
+uvicorn[standard]==0.34.*
+sqlalchemy==2.0.*
+pydantic==2.10.*
+numpy>=1.26
+matplotlib>=3.8
