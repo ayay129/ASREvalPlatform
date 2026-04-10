@@ -490,7 +490,7 @@ def generate_report(
     sentence_metrics: List[Dict],
     corpus_metrics: Dict,
     output_path: str,
-    title: str = "ASR 评测报告",
+    title: str = "ASR Evaluation Report",
 ):
     """
     生成完整的 PDF 报告 + 逐句明细 CSV。

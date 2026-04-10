@@ -54,14 +54,9 @@ PALETTE_5 = ['#2563EB', '#7C3AED', '#059669', '#D97706', '#DC2626']
 
 
 def _setup_style():
-    """配置 matplotlib 中文字体"""
     plt.rcParams.update({
         'font.family': 'sans-serif',
-        'font.sans-serif': [
-            'Noto Sans CJK SC', 'WenQuanYi Zen Hei',
-            'SimHei', 'Microsoft YaHei',
-            'DejaVu Sans', 'Arial',
-        ],
+        'font.sans-serif': ['DejaVu Sans', 'Arial', 'Liberation Sans'],
         'axes.unicode_minus': False,
         'font.size': 10,
         'axes.titlesize': 13,
@@ -84,7 +79,7 @@ def _setup_style():
 # 图表绘制函数
 # ──────────────────────────────────────
 
-def _plot_summary_card(ax, corpus, title="ASR 评测报告"):
+def _plot_summary_card(ax, corpus, title="ASR Evaluation Report"):
     ax.set_xlim(0, 10)
     ax.set_ylim(0, 3.5)
     ax.axis('off')
@@ -96,11 +91,11 @@ def _plot_summary_card(ax, corpus, title="ASR 评测报告"):
     acc = corpus['num_correct'] / n if n > 0 else 0
 
     cards = [
-        ('WER',      f"{corpus['corpus_wer']*100:.2f}%", COLORS['primary']),
-        ('CER',      f"{corpus['corpus_cer']*100:.2f}%", COLORS['secondary']),
-        ('SER',      f"{corpus['corpus_ser']*100:.2f}%", COLORS['warning']),
-        ('评估句数',  str(n),                              COLORS['accent']),
-        ('句准确率',  f"{acc*100:.1f}%",                   COLORS['danger']),
+        ('WER',       f"{corpus['corpus_wer']*100:.2f}%", COLORS['primary']),
+        ('CER',       f"{corpus['corpus_cer']*100:.2f}%", COLORS['secondary']),
+        ('SER',       f"{corpus['corpus_ser']*100:.2f}%", COLORS['warning']),
+        ('Sentences', str(n),                              COLORS['accent']),
+        ('Accuracy',  f"{acc*100:.1f}%",                   COLORS['danger']),
     ]
 
     card_w, gap = 1.6, 0.15
@@ -122,8 +117,8 @@ def _plot_summary_card(ax, corpus, title="ASR 评测报告"):
 
 def _plot_corpus_bar(ax, corpus):
     names  = ['WER', 'CER', 'SER', 'MER', 'WIL']
-    cn     = ['词错误率', '字错误率', '句错误率', '匹配错误率', '词信息丢失']
-    labels = [f'{c}\n({e})' for c, e in zip(cn, names)]
+    descs  = ['Word Err', 'Char Err', 'Sent Err', 'Match Err', 'Word Info Lost']
+    labels = [f'{d}\n({n})' for d, n in zip(descs, names)]
     keys   = ['corpus_wer', 'corpus_cer', 'corpus_ser', 'corpus_mer', 'corpus_wil']
     values = [corpus[k] * 100 for k in keys]
 
@@ -135,20 +130,20 @@ def _plot_corpus_bar(ax, corpus):
                 fontsize=10, fontweight='bold', color=COLORS['text_dark'])
 
     ax.set_xlim(0, max(values) * 1.25 if max(values) > 0 else 10)
-    ax.set_title('语料级错误率总览', pad=12)
-    ax.set_xlabel('错误率 (%)')
+    ax.set_title('Corpus-level Error Rates', pad=12)
+    ax.set_xlabel('Error Rate (%)')
     ax.invert_yaxis()
 
 
 def _plot_edit_ops(ax, corpus):
-    labels = ['正确', '替换', '插入', '删除']
+    labels = ['Correct', 'Substitution', 'Insertion', 'Deletion']
     sizes = [corpus['total_word_cor'], corpus['total_word_sub'],
              corpus['total_word_ins'], corpus['total_word_del']]
     colors = [COLORS['cor_color'], COLORS['sub_color'],
               COLORS['ins_color'], COLORS['del_color']]
     total = sum(sizes)
     if total == 0:
-        ax.text(0.5, 0.5, '无数据', transform=ax.transAxes,
+        ax.text(0.5, 0.5, 'No data', transform=ax.transAxes,
                 ha='center', va='center', fontsize=14, color=COLORS['muted'])
         return
 
@@ -158,12 +153,12 @@ def _plot_edit_ops(ax, corpus):
         wedgeprops=dict(width=0.4, edgecolor='white', linewidth=2))
     ax.text(0, 0.05, f'{total:,}', ha='center', va='center',
             fontsize=16, fontweight='bold', color=COLORS['text_dark'])
-    ax.text(0, -0.12, '总操作数', ha='center', va='center',
+    ax.text(0, -0.12, 'Total ops', ha='center', va='center',
             fontsize=8, color=COLORS['text_light'])
     legend_labels = [f'{l}: {s:,} ({s/total*100:.1f}%)' for l, s in zip(labels, sizes)]
     ax.legend(wedges, legend_labels, loc='lower center',
               bbox_to_anchor=(0.5, -0.18), ncol=2, fontsize=8, frameon=False)
-    ax.set_title('编辑操作分布（词级）', pad=12)
+    ax.set_title('Edit Operation Distribution (word-level)', pad=12)
 
 
 def _plot_histogram(ax, values_pct, title, xlabel, mean_val, median_val):
@@ -181,22 +176,22 @@ def _plot_histogram(ax, values_pct, title, xlabel, mean_val, median_val):
             patch.set_facecolor(COLORS['danger'])
 
     ax.axvline(mean_val, color=COLORS['danger'], linestyle='--', linewidth=1.5,
-               label=f'均值: {mean_val:.1f}%')
+               label=f'Mean: {mean_val:.1f}%')
     ax.axvline(median_val, color=COLORS['secondary'], linestyle='-.', linewidth=1.5,
-               label=f'中位数: {median_val:.1f}%')
+               label=f'Median: {median_val:.1f}%')
     ax.legend(fontsize=9, loc='upper right', framealpha=0.9)
     ax.set_title(title, pad=12)
     ax.set_xlabel(xlabel)
-    ax.set_ylabel('句子数量')
+    ax.set_ylabel('Sentence Count')
 
 
 def _plot_wer_bucket(ax, wers):
     buckets = [
-        ('完美\n(WER=0)',   np.sum(wers == 0)),
-        ('低错误\n(0~10%)', np.sum((wers > 0) & (wers <= 0.1))),
-        ('中等\n(10~30%)',  np.sum((wers > 0.1) & (wers <= 0.3))),
-        ('较高\n(30~50%)',  np.sum((wers > 0.3) & (wers <= 0.5))),
-        ('严重\n(>50%)',    np.sum(wers > 0.5)),
+        ('Perfect\n(WER=0)',  np.sum(wers == 0)),
+        ('Low\n(0~10%)',      np.sum((wers > 0) & (wers <= 0.1))),
+        ('Medium\n(10~30%)',  np.sum((wers > 0.1) & (wers <= 0.3))),
+        ('High\n(30~50%)',    np.sum((wers > 0.3) & (wers <= 0.5))),
+        ('Severe\n(>50%)',    np.sum(wers > 0.5)),
     ]
     labels = [b[0] for b in buckets]
     counts = [b[1] for b in buckets]
@@ -210,8 +205,8 @@ def _plot_wer_bucket(ax, wers):
             ax.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.5,
                     f'{cnt}\n({pct:.1f}%)', ha='center', va='bottom',
                     fontsize=8, fontweight='bold', color=COLORS['text_dark'])
-    ax.set_title('WER 区间分桶统计', pad=12)
-    ax.set_ylabel('句子数量')
+    ax.set_title('WER Bucket Distribution', pad=12)
+    ax.set_ylabel('Sentence Count')
     ax.set_ylim(0, max(counts) * 1.3 if max(counts) > 0 else 10)
 
 
@@ -222,10 +217,10 @@ def _plot_wer_vs_length(ax, ref_lens, wer_vals):
         p = np.poly1d(z)
         x_line = np.linspace(ref_lens.min(), ref_lens.max(), 100)
         ax.plot(x_line, p(x_line), '--', color=COLORS['danger'], linewidth=2,
-                label=f'趋势线 (斜率={z[0]:.2f})')
+                label=f'Trend (slope={z[0]:.2f})')
         ax.legend(fontsize=9, framealpha=0.9)
-    ax.set_title('WER 与参考文本长度的关系', pad=12)
-    ax.set_xlabel('参考文本长度（词数）')
+    ax.set_title('WER vs. Reference Length', pad=12)
+    ax.set_xlabel('Reference Length (words)')
     ax.set_ylabel('WER (%)')
     ax.set_ylim(bottom=-2)
 
@@ -239,8 +234,8 @@ def _plot_boxplot(ax, wer_pct, cer_pct):
     bp['boxes'][0].set_edgecolor(COLORS['primary'])
     bp['boxes'][1].set_facecolor('#EDE9FE')
     bp['boxes'][1].set_edgecolor(COLORS['secondary'])
-    ax.set_title('WER 与 CER 箱线图', pad=12)
-    ax.set_ylabel('错误率 (%)')
+    ax.set_title('WER & CER Box Plot', pad=12)
+    ax.set_ylabel('Error Rate (%)')
 
 
 def _plot_cdf(ax, wer_pct):
@@ -252,11 +247,11 @@ def _plot_cdf(ax, wer_pct):
         pct_below = np.sum(wer_pct <= threshold) / len(wer_pct) * 100
         ax.axvline(threshold, color=color, linestyle=':', linewidth=1, alpha=0.7)
         ax.text(threshold + 1, pct_below - 3,
-                f'{pct_below:.0f}% \u2264 {threshold}%',
+                f'{pct_below:.0f}% <= {threshold}%',
                 fontsize=8, color=color, fontweight='bold')
-    ax.set_title('WER 累积分布函数 (CDF)', pad=12)
+    ax.set_title('WER Cumulative Distribution (CDF)', pad=12)
     ax.set_xlabel('WER (%)')
-    ax.set_ylabel('累积句子占比 (%)')
+    ax.set_ylabel('Cumulative Sentences (%)')
     ax.set_xlim(left=-2)
     ax.set_ylim(0, 105)
 
@@ -280,7 +275,7 @@ def _build_annotations(corpus, wers, cers, ref_lens):
     else:
         sub_pct = ins_pct = del_pct = 0
 
-    err_types = {'替换': sub_pct, '插入': ins_pct, '删除': del_pct}
+    err_types = {'Substitution': sub_pct, 'Insertion': ins_pct, 'Deletion': del_pct}
     dominant = max(err_types, key=err_types.get)
     perfect_pct = np.sum(wers == 0) / len(wers) * 100
     severe_pct = np.sum(wers > 0.5) / len(wers) * 100
@@ -299,51 +294,47 @@ def _build_annotations(corpus, wers, cers, ref_lens):
 
     notes = {
         'summary': (
-            f"本报告对 {n} 条语音识别结果进行评估。"
-            f"语料级 WER 为 {corpus['corpus_wer']*100:.2f}%，"
-            f"CER 为 {corpus['corpus_cer']*100:.2f}%，"
-            f"完全正确的句子占 {acc:.1f}%。"
+            f"This report evaluates {n} ASR results. "
+            f"Corpus WER: {corpus['corpus_wer']*100:.2f}%, "
+            f"CER: {corpus['corpus_cer']*100:.2f}%, "
+            f"Sentence accuracy: {acc:.1f}%."
         ),
         'corpus_bar': (
-            f"【解读】WER 衡量词级识别准确度；"
-            f"CER 按字符计算；SER = {corpus['corpus_ser']*100:.1f}%，"
-            f"表示有该比例的句子存在至少一处错误。"
+            f"WER measures word-level accuracy; "
+            f"CER measures character-level accuracy; "
+            f"SER = {corpus['corpus_ser']*100:.1f}% of sentences have at least one error."
         ),
         'edit_ops': (
-            f"【解读】在 {total_ops:,} 次词级操作中，"
-            f"替换占 {sub_pct:.1f}%，插入占 {ins_pct:.1f}%，"
-            f"删除占 {del_pct:.1f}%。"
-            f"主要错误类型为「{dominant}」。"
+            f"Out of {total_ops:,} word-level operations: "
+            f"Sub {sub_pct:.1f}%, Ins {ins_pct:.1f}%, Del {del_pct:.1f}%. "
+            f"Dominant error type: {dominant}."
         ),
         'wer_hist': (
-            f"【解读】均值 {wer_mean:.1f}%，中位数 {wer_med:.1f}%，"
-            f"标准差 {wer_std:.1f}%。"
-            f"绿色=完美, 蓝色=低, 橙色=中, 红色=高。"
+            f"Mean {wer_mean:.1f}%, Median {wer_med:.1f}%, Std {wer_std:.1f}%. "
+            f"Green=perfect, Blue=low, Orange=medium, Red=high."
         ),
         'cer_hist': (
-            f"【解读】CER 均值 {cer_mean:.1f}%，"
-            f"中位数 {cer_med:.1f}%。"
-            f"CER 通常低于 WER。"
+            f"CER mean {cer_mean:.1f}%, median {cer_med:.1f}%. "
+            f"CER is typically lower than WER."
         ),
         'wer_bucket': (
-            f"【解读】完美识别占 {perfect_pct:.1f}%，"
-            f"严重错误（>50%）占 {severe_pct:.1f}%。"
+            f"Perfect recognition: {perfect_pct:.1f}%, "
+            f"Severe errors (>50%): {severe_pct:.1f}%."
         ),
         'wer_vs_length': (
-            f"【解读】趋势线斜率为 {slope:.2f}。"
-            + (f"斜率为正说明越长的句子错误率越高。"
+            f"Trend slope: {slope:.2f}. "
+            + (f"Positive slope: longer sentences have higher WER."
                if slope > 0.1 else
-               f"模型对不同长度句子表现较均衡。"
+               f"Model performs consistently across sentence lengths."
                if slope > -0.1 else
-               f"长句错误率反而更低。")
+               f"Longer sentences have lower WER.")
         ),
         'boxplot': (
-            f"【解读】箱体表示 25%~75% 分位数，"
-            f"红线为中位数。WER 中位数: {wer_med:.1f}%，"
-            f"CER 中位数: {cer_med:.1f}%。"
+            f"Box spans 25th-75th percentile, red line = median. "
+            f"WER median: {wer_med:.1f}%, CER median: {cer_med:.1f}%."
         ),
         'cdf': (
-            f"【解读】曲线越早到达 100% 说明整体质量越好。"
+            f"A curve reaching 100% earlier indicates better overall quality."
         ),
     }
     return notes
@@ -365,7 +356,7 @@ def generate_pdf_report(
     sentence_metrics: List[Dict[str, Any]],
     corpus_metrics: Dict[str, Any],
     output_path: str,
-    title: str = "ASR 评测报告",
+    title: str = "ASR Evaluation Report",
 ):
     """
     生成带中文注释的 PDF 图表报告。
@@ -417,10 +408,10 @@ def generate_pdf_report(
         _note_box(fig1.add_subplot(gs1[3, 1]), notes['edit_ops'])
 
         ax3 = fig1.add_subplot(gs1[4, 0])
-        _plot_histogram(ax3, wer_pct, 'WER 分布直方图（逐句）', 'WER (%)',
+        _plot_histogram(ax3, wer_pct, 'WER Distribution (per sentence)', 'WER (%)',
                         wer_pct.mean(), np.median(wer_pct))
         ax4 = fig1.add_subplot(gs1[4, 1])
-        _plot_histogram(ax4, cer_pct, 'CER 分布直方图（逐句）', 'CER (%)',
+        _plot_histogram(ax4, cer_pct, 'CER Distribution (per sentence)', 'CER (%)',
                         cer_pct.mean(), np.median(cer_pct))
 
         _note_box(fig1.add_subplot(gs1[5, 0]), notes['wer_hist'])
