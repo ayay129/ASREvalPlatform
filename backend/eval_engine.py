@@ -490,28 +490,26 @@ def generate_report(
     sentence_metrics: List[Dict],
     corpus_metrics: Dict,
     output_path: str,
+    title: str = "ASR 评测报告",
 ):
     """
-    生成 PDF 报告。
-    
-    Step 2 会替换为完整的中文可视化报告。
-    当前版本生成一个简单的文本 PDF 占位。
+    生成完整的 PDF 报告 + 逐句明细 CSV。
+
+    会在 output_path 同目录下生成：
+      - report_xxx.pdf   (图表报告)
+      - report_xxx.csv   (逐句明细)
     """
     try:
-        import matplotlib
-        matplotlib.use('Agg')
-        import matplotlib.pyplot as plt
+        from report_generator import generate_pdf_report, export_detail_csv
 
-        fig, ax = plt.subplots(figsize=(8, 4))
-        ax.text(0.5, 0.5,
-                f"ASR Evaluation Report\n"
-                f"WER: {corpus_metrics['corpus_wer']:.4f}\n"
-                f"CER: {corpus_metrics['corpus_cer']:.4f}\n"
-                f"Sentences: {corpus_metrics['num_sentences']}",
-                ha='center', va='center', fontsize=16,
-                transform=ax.transAxes)
-        ax.axis('off')
-        fig.savefig(output_path, dpi=100, bbox_inches='tight')
-        plt.close(fig)
+        # 生成 PDF
+        generate_pdf_report(sentence_metrics, corpus_metrics, output_path, title=title)
+
+        # 同目录下生成 CSV
+        csv_path = output_path.rsplit('.', 1)[0] + '_detail.csv'
+        export_detail_csv(sentence_metrics, csv_path)
+
     except Exception as e:
         print(f"[WARN] 报告生成失败: {e}")
+        import traceback
+        traceback.print_exc()
