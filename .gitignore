@@ -12,3 +12,9 @@ env/
 .idea/
 .DS_Store
 */__pycache__/*/
+*/node_modules/*/
+*.swp
+*.swo
+*.bak
+*.tmp
+*.pdf
