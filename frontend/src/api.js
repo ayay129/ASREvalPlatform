@@ -7,6 +7,16 @@ export const api = {
   listDatasets: () =>
     http.get('/datasets').then(r => r.data),
 
+  // Train runs
+  listTrainRuns: (params = {}) =>
+    http.get('/train-runs', { params }).then(r => r.data),
+
+  createTrainRun: (body) =>
+    http.post('/train-runs', body).then(r => r.data),
+
+  getTrainRun: (id) =>
+    http.get(`/train-runs/${id}`).then(r => r.data),
+
   // Evaluations
   listEvals: (params = {}) =>
     http.get('/evaluations', { params }).then(r => r.data),

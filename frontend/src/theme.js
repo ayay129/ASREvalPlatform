@@ -19,6 +19,7 @@ export const COLORS = {
 }
 
 export const STATUS_COLOR = {
+  queued:    COLORS.secondary2,
   completed: COLORS.success,
   running:   COLORS.warning,
   pending:   COLORS.secondary2,
