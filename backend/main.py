@@ -10,6 +10,9 @@ main.py — FastAPI 后端入口
 
 API 路由总览：
   GET  /api/datasets             获取可用数据集列表
+  POST /api/train-runs           创建训练任务
+  GET  /api/train-runs           获取训练任务列表
+  GET  /api/train-runs/{id}      获取训练任务详情
   POST /api/evaluations          发起新评测
   GET  /api/evaluations          获取评测记录列表
   GET  /api/evaluations/{id}     获取单次评测详情
@@ -30,11 +33,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
-from database import init_db, get_db, Evaluation, EvaluationDetail
+from database import init_db, get_db, Evaluation, EvaluationDetail, TrainRun
 from schemas import (
     EvalCreate, EvalSummary, EvalFullResponse, EvalDetailItem,
     EditOpsBreakdown, WerDistribution,
     DatasetListResponse,
+    TrainRunCreate, TrainRunSummary, TrainRunDetail,
     CompareRequest, CompareResponse, CompareItem,
     MessageResponse,
 )
@@ -94,7 +98,93 @@ def list_datasets():
 
 
 # ──────────────────────────────────────
-# 3. 评测 API
+# 3. 训练 API
+# ──────────────────────────────────────
+
+@app.post("/api/train-runs", response_model=TrainRunDetail, tags=["训练"])
+def create_train_run(req: TrainRunCreate, db: Session = Depends(get_db)):
+    """
+    创建一个微调训练任务。
+
+    Step 1 先只保存配置到数据库，状态初始为 queued，
+    暂时不触发真实训练。
+    """
+    train_run = TrainRun(
+        name=req.name,
+        base_model=req.base_model,
+        train_data_path=req.train_data_path,
+        test_data_path=req.test_data_path,
+        output_dir=req.output_dir,
+        language=req.language,
+        task=req.task,
+        timestamps=req.timestamps,
+        num_train_epochs=req.num_train_epochs,
+        learning_rate=req.learning_rate,
+        warmup_steps=req.warmup_steps,
+        logging_steps=req.logging_steps,
+        eval_steps=req.eval_steps,
+        save_steps=req.save_steps,
+        per_device_train_batch_size=req.per_device_train_batch_size,
+        per_device_eval_batch_size=req.per_device_eval_batch_size,
+        gradient_accumulation_steps=req.gradient_accumulation_steps,
+        save_total_limit=req.save_total_limit,
+        use_adalora=req.use_adalora,
+        use_8bit=req.use_8bit,
+        fp16=req.fp16,
+        use_compile=req.use_compile,
+        local_files_only=req.local_files_only,
+        push_to_hub=req.push_to_hub,
+        augment_config_path=req.augment_config_path,
+        resume_from_checkpoint=req.resume_from_checkpoint,
+        hub_model_id=req.hub_model_id,
+        status="queued",
+    )
+    db.add(train_run)
+    db.commit()
+    db.refresh(train_run)
+
+    return TrainRunDetail.model_validate(train_run)
+
+
+@app.get("/api/train-runs", response_model=list[TrainRunSummary], tags=["训练"])
+def list_train_runs(
+    status: Optional[str] = Query(None, description="按状态过滤: queued/running/completed/failed"),
+    base_model: Optional[str] = Query(None, description="按基础模型过滤"),
+    limit: int = Query(50, ge=1, le=200, description="返回条数"),
+    offset: int = Query(0, ge=0, description="跳过条数（分页）"),
+    db: Session = Depends(get_db),
+):
+    """获取训练任务列表。"""
+    query = db.query(TrainRun)
+
+    if status:
+        query = query.filter(TrainRun.status == status)
+    if base_model:
+        query = query.filter(TrainRun.base_model.ilike(f"%{base_model}%"))
+
+    train_runs = (
+        query
+        .order_by(TrainRun.created_at.desc())
+        .offset(offset)
+        .limit(limit)
+        .all()
+    )
+
+    return [TrainRunSummary.model_validate(run) for run in train_runs]
+
+
+@app.get("/api/train-runs/{run_id}", response_model=TrainRunDetail, tags=["训练"])
+def get_train_run(run_id: int, db: Session = Depends(get_db)):
+    """获取单个训练任务的完整配置与状态。"""
+    train_run = db.query(TrainRun).filter(TrainRun.id == run_id).first()
+    if not train_run:
+        raise HTTPException(status_code=404, detail=f"训练任务 {run_id} 不存在")
+
+    return TrainRunDetail.model_validate(train_run)
+
+
+# ──────────────────────────────────────
+# 4. 评测 API
 # ──────────────────────────────────────
 
 @app.post("/api/evaluations", response_model=EvalSummary, tags=["评测"])
@@ -260,7 +350,7 @@ def delete_evaluation(eval_id: int, db: Session = Depends(get_db)):
 
 
 # ──────────────────────────────────────
-# 4. 模型对比 API
+# 5. 模型对比 API
 # ──────────────────────────────────────
 
 @app.post("/api/compare", response_model=CompareResponse, tags=["对比"])
@@ -306,7 +396,7 @@ def compare_evaluations(req: CompareRequest, db: Session = Depends(get_db)):
 
 
 # ──────────────────────────────────────
-# 5. 报告导出 API
+# 6. 报告导出 API
 # ──────────────────────────────────────
 
 @app.get("/api/evaluations/{eval_id}/export", tags=["报告"])
@@ -330,7 +420,7 @@ def export_report(eval_id: int, db: Session = Depends(get_db)):
 
 
 # ──────────────────────────────────────
-# 6. 后台评测任务
+# 7. 后台评测任务
 # ──────────────────────────────────────
 
 def run_evaluation(eval_id: int):
@@ -463,7 +553,7 @@ def run_evaluation(eval_id: int):
 
 
 # ──────────────────────────────────────
-# 7. 健康检查
+# 8. 健康检查
 # ──────────────────────────────────────
 
 @app.get("/api/health", tags=["系统"])
@@ -477,7 +567,7 @@ def health_check():
 
 
 # ──────────────────────────────────────
-# 8. 启动入口
+# 9. 启动入口
 # ──────────────────────────────────────
 
 if __name__ == "__main__":

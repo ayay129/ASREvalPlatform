@@ -15,6 +15,7 @@ database.py — 数据库模型与连接管理
 表设计：
   evaluations      — 每次评测的汇总信息（一行 = 一次评测）
   evaluation_details — 每次评测中每条句子的详细指标
+  train_runs       — 每次微调训练任务的配置与状态
 """
 
 import os
@@ -216,6 +217,67 @@ class EvaluationDetail(Base):
 
     # ── 反向关联 ──
     evaluation = relationship("Evaluation", back_populates="details")
+
+
+class TrainRun(Base):
+    """
+    train_runs 表 — 微调训练任务
+
+    Step 1 先只负责保存训练配置和任务状态，
+    后续再由独立 worker 消费 queued 任务并执行真实训练。
+    """
+    __tablename__ = "train_runs"
+
+    # ── 基本信息 ──
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String(200), nullable=False)
+    base_model = Column(String(255), nullable=False, index=True)
+    train_data_path = Column(Text, nullable=False)
+    test_data_path = Column(Text, nullable=False)
+    output_dir = Column(Text, nullable=False)
+
+    # ── 训练参数 ──
+    language = Column(String(100), default="Chinese")
+    task = Column(String(20), default="transcribe")
+    timestamps = Column(Boolean, default=False)
+    num_train_epochs = Column(Integer, default=3)
+    learning_rate = Column(Float, default=1e-3)
+    warmup_steps = Column(Integer, default=50)
+    logging_steps = Column(Integer, default=100)
+    eval_steps = Column(Integer, default=1000)
+    save_steps = Column(Integer, default=1000)
+    per_device_train_batch_size = Column(Integer, default=8)
+    per_device_eval_batch_size = Column(Integer, default=8)
+    gradient_accumulation_steps = Column(Integer, default=1)
+    save_total_limit = Column(Integer, default=10)
+
+    # ── 运行开关 ──
+    use_adalora = Column(Boolean, default=True)
+    use_8bit = Column(Boolean, default=False)
+    fp16 = Column(Boolean, default=True)
+    use_compile = Column(Boolean, default=False)
+    local_files_only = Column(Boolean, default=False)
+    push_to_hub = Column(Boolean, default=False)
+
+    # ── 可选路径/扩展配置 ──
+    augment_config_path = Column(Text, nullable=True)
+    resume_from_checkpoint = Column(Text, nullable=True)
+    hub_model_id = Column(String(255), nullable=True)
+
+    # ── 任务状态 ──
+    status = Column(String(20), default="queued", index=True)
+    error_message = Column(Text, nullable=True)
+
+    # ── 时间戳 ──
+    created_at = Column(DateTime, default=datetime.utcnow)
+    started_at = Column(DateTime, nullable=True)
+    completed_at = Column(DateTime, nullable=True)
+
+    def __repr__(self):
+        return (
+            f"<TrainRun(id={self.id}, name='{self.name}', "
+            f"base_model='{self.base_model}', status='{self.status}')>"
+        )
 
 
 # ──────────────────────────────────────

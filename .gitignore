@@ -18,3 +18,4 @@ env/
 *.bak
 *.tmp
 *.pdf
+**/*.pyc

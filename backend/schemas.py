@@ -194,7 +194,135 @@ class DatasetListResponse(BaseModel):
 
 
 # ──────────────────────────────────────
-# 3. 模型对比相关
+# 3. 训练任务相关
+# ──────────────────────────────────────
+
+class TrainRunCreate(BaseModel):
+    """
+    发起微调训练任务时前端需要传的字段。
+
+    Step 1 只负责保存配置，不真正启动训练。
+    """
+    name: str = Field(
+        ...,
+        min_length=1,
+        max_length=200,
+        description="训练任务显示名称",
+        examples=["tibetan-whisper-small-v1"],
+    )
+    base_model: str = Field(
+        ...,
+        min_length=1,
+        max_length=255,
+        description="Whisper 基础模型名称或本地路径",
+        examples=["openai/whisper-small"],
+    )
+    train_data_path: str = Field(
+        ...,
+        min_length=1,
+        description="训练集 manifest 路径",
+        examples=["/data/manifests/tibetan/train.json"],
+    )
+    test_data_path: str = Field(
+        ...,
+        min_length=1,
+        description="验证/测试集 manifest 路径",
+        examples=["/data/manifests/tibetan/test.json"],
+    )
+    output_dir: str = Field(
+        "output/",
+        min_length=1,
+        description="训练输出目录",
+        examples=["/data/whisper/output"],
+    )
+    language: str = Field(
+        "Chinese",
+        description="Whisper 训练语言参数",
+        examples=["Chinese"],
+    )
+    task: str = Field(
+        "transcribe",
+        description="Whisper 任务类型: transcribe / translate",
+        examples=["transcribe"],
+    )
+    timestamps: bool = Field(False, description="是否使用时间戳训练")
+    num_train_epochs: int = Field(3, ge=1, description="训练轮数")
+    learning_rate: float = Field(1e-3, gt=0, description="学习率")
+    warmup_steps: int = Field(50, ge=0, description="预热步数")
+    logging_steps: int = Field(100, ge=1, description="日志打印步数")
+    eval_steps: int = Field(1000, ge=1, description="评估步数")
+    save_steps: int = Field(1000, ge=1, description="保存 checkpoint 步数")
+    per_device_train_batch_size: int = Field(8, ge=1, description="单卡训练 batch size")
+    per_device_eval_batch_size: int = Field(8, ge=1, description="单卡评估 batch size")
+    gradient_accumulation_steps: int = Field(1, ge=1, description="梯度累积步数")
+    save_total_limit: int = Field(10, ge=1, description="最多保留 checkpoint 数量")
+    use_adalora: bool = Field(True, description="是否使用 AdaLora")
+    use_8bit: bool = Field(False, description="是否加载 8-bit 模型")
+    fp16: bool = Field(True, description="是否开启 fp16")
+    use_compile: bool = Field(False, description="是否开启 torch.compile")
+    local_files_only: bool = Field(False, description="是否只从本地加载模型")
+    push_to_hub: bool = Field(False, description="训练完成后是否 push 到 Hugging Face Hub")
+    augment_config_path: Optional[str] = Field(None, description="数据增强配置文件路径")
+    resume_from_checkpoint: Optional[str] = Field(None, description="恢复训练的 checkpoint 路径")
+    hub_model_id: Optional[str] = Field(None, description="推送到 Hub 时的仓库 ID")
+
+
+class TrainRunSummary(BaseModel):
+    """训练任务列表页使用的精简模型。"""
+    id: int
+    name: str
+    base_model: str
+    train_data_path: str
+    test_data_path: str
+    status: str
+    created_at: datetime
+    started_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+
+    model_config = {"from_attributes": True}
+
+
+class TrainRunDetail(BaseModel):
+    """训练任务详情。"""
+    id: int
+    name: str
+    base_model: str
+    train_data_path: str
+    test_data_path: str
+    output_dir: str
+    language: str
+    task: str
+    timestamps: bool
+    num_train_epochs: int
+    learning_rate: float
+    warmup_steps: int
+    logging_steps: int
+    eval_steps: int
+    save_steps: int
+    per_device_train_batch_size: int
+    per_device_eval_batch_size: int
+    gradient_accumulation_steps: int
+    save_total_limit: int
+    use_adalora: bool
+    use_8bit: bool
+    fp16: bool
+    use_compile: bool
+    local_files_only: bool
+    push_to_hub: bool
+    augment_config_path: Optional[str] = None
+    resume_from_checkpoint: Optional[str] = None
+    hub_model_id: Optional[str] = None
+    status: str
+    error_message: Optional[str] = None
+    created_at: datetime
+    started_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+
+    model_config = {"from_attributes": True}
+
+
+# ──────────────────────────────────────
+# 4. 模型对比相关
 # ──────────────────────────────────────
 
 class CompareRequest(BaseModel):
@@ -238,7 +366,7 @@ class CompareResponse(BaseModel):
 
 
 # ──────────────────────────────────────
-# 4. 通用响应
+# 5. 通用响应
 # ──────────────────────────────────────
 
 class MessageResponse(BaseModel):
