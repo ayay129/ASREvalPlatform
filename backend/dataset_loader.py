@@ -37,6 +37,9 @@ DATASET_BASE_DIR = os.environ.get(
     os.path.join(os.path.dirname(__file__), "datasets")
 )
 
+# Hugging Face cache 根目录下常见的非数据集目录
+SKIP_SCAN_DIR_NAMES = {"downloads", "downloads_extracted", "locks", "__pycache__"}
+
 
 # ──────────────────────────────────────
 # 2. 数据集扫描
@@ -49,8 +52,8 @@ def scan_datasets(base_dir: Optional[str] = None) -> List[DatasetInfo]:
     扫描逻辑：
       1. 遍历根目录下的一级子项（文件和目录）
       2. 如果是 .csv 文件 → 当作单文件数据集
-      3. 如果是目录且包含 dataset_info.json → HuggingFace 格式
-      4. 如果是目录且包含 .csv 文件 → 普通目录数据集
+      3. 如果是目录且包含（或下层包含）dataset_info.json → HuggingFace 格式
+      4. 如果是目录且包含（或下层包含）.csv 文件 → 普通目录数据集
       5. 其他跳过
     
     Args:
@@ -69,6 +72,9 @@ def scan_datasets(base_dir: Optional[str] = None) -> List[DatasetInfo]:
     datasets = []
 
     for entry in sorted(root.iterdir()):
+        if entry.is_dir() and entry.name in SKIP_SCAN_DIR_NAMES:
+            continue
+
         try:
             if entry.is_file() and entry.suffix.lower() == '.csv':
                 # ── 单 CSV 文件 ──
@@ -89,6 +95,59 @@ def scan_datasets(base_dir: Optional[str] = None) -> List[DatasetInfo]:
     return datasets
 
 
+def _display_dataset_name(path: Path) -> str:
+    """把 Hugging Face cache 目录名转成更可读的显示名。"""
+    name = path.name
+    if name.startswith("datasets--"):
+        return name[len("datasets--"):].replace("--", "/")
+    if "___" in name:
+        return name.replace("___", "/")
+    return name
+
+
+def _directory_stats(path: Path) -> Tuple[int, float]:
+    """统计目录内文件数量和总大小。"""
+    file_count = 0
+    total_size = 0
+
+    for file_path in path.rglob('*'):
+        if file_path.is_file():
+            file_count += 1
+            total_size += file_path.stat().st_size
+
+    size_mb = round(total_size / (1024 * 1024), 2)
+    return file_count, size_mb
+
+
+def _find_hf_dataset_dir(path: Path) -> Optional[Path]:
+    """
+    在目录中定位 Hugging Face 数据集的实际叶子目录。
+
+    `datasets` 的本地 cache 一般是多层结构：
+      owner___dataset/config/version/hash/dataset_info.json
+    当前扫描入口通常只会拿到 owner___dataset 这一层，所以这里要往下找。
+    """
+    direct_info = path / "dataset_info.json"
+    if direct_info.exists():
+        return path
+
+    candidates = [info_file.parent for info_file in path.rglob("dataset_info.json")]
+    if not candidates:
+        return None
+
+    # 取最近一次生成、且层级最深的那个目录，避免扫到旧 cache 版本。
+    candidates.sort(
+        key=lambda p: (p.stat().st_mtime, len(p.parts)),
+        reverse=True,
+    )
+    return candidates[0]
+
+
+def _find_csv_files(path: Path) -> List[Path]:
+    """递归查找目录里的 CSV 文件。"""
+    return sorted(file_path for file_path in path.rglob("*.csv") if file_path.is_file())
+
+
 def _scan_csv_file(path: Path) -> Optional[DatasetInfo]:
     """
     扫描单个 CSV 文件，检查是否包含必要的列。
@@ -105,15 +164,9 @@ def _scan_csv_file(path: Path) -> Optional[DatasetInfo]:
             if header is None:
                 return None
             
-            header_lower = [col.strip().lower() for col in header]
-            
-            # 检查是否有参考文本列和预测文本列
-            has_ref = any(col in header_lower for col in
-                        ['transcription', 'reference', 'ref', 'ground_truth', 'gt', 'label', 'sentence'])
-            has_hyp = any(col in header_lower for col in
-                        ['predicted_string', 'prediction', 'pred', 'hypothesis', 'hyp', 'asr_output'])
-            
-            if not (has_ref and has_hyp):
+            try:
+                _resolve_text_columns(header)
+            except ValueError:
                 return None  # 不是 ASR 评测用的 CSV
             
             # 计算行数（跳过表头）
@@ -136,44 +189,41 @@ def _scan_directory(path: Path) -> Optional[DatasetInfo]:
     扫描目录型数据集。
     
     优先级：
-      1. 如果有 dataset_info.json → HuggingFace 格式
-      2. 如果有 CSV 文件 → 普通目录
+      1. 如果有 dataset_info.json（允许在子目录）→ HuggingFace 格式
+      2. 如果有 CSV 文件（允许在子目录）→ 普通目录
       3. 否则跳过
     """
-    # 计算目录总大小
-    total_size = sum(
-        f.stat().st_size for f in path.rglob('*') if f.is_file()
-    )
-    size_mb = round(total_size / (1024 * 1024), 2)
-
     # 检查 HuggingFace 格式
-    hf_info = path / "dataset_info.json"
-    if hf_info.exists():
+    hf_dir = _find_hf_dataset_dir(path)
+    if hf_dir:
+        file_count, size_mb = _directory_stats(hf_dir)
         return DatasetInfo(
-            name=path.name,
-            path=str(path),
-            file_count=sum(1 for _ in path.rglob('*') if _.is_file()),
-            total_rows=_count_hf_rows(path),
+            name=_display_dataset_name(path),
+            path=str(hf_dir),
+            file_count=file_count,
+            total_rows=_count_hf_rows(hf_dir),
             format="huggingface",
             size_mb=size_mb,
         )
 
     # 检查是否有 CSV 文件
-    csv_files = list(path.glob('*.csv'))
+    csv_files = _find_csv_files(path)
     if csv_files:
         # 统计所有 CSV 的总行数
-        total_rows = 0
+        valid_infos = []
         for csv_file in csv_files:
             info = _scan_csv_file(csv_file)
-            if info and info.total_rows:
-                total_rows += info.total_rows
-        
-        if total_rows > 0:
+            if info:
+                valid_infos.append(info)
+
+        if valid_infos:
+            total_rows = sum(info.total_rows or 0 for info in valid_infos)
+            file_count, size_mb = _directory_stats(path)
             return DatasetInfo(
                 name=path.name,
-                path=str(csv_files[0]) if len(csv_files) == 1 else str(path),
-                file_count=len(csv_files),
-                total_rows=total_rows,
+                path=str(valid_infos[0].path) if len(valid_infos) == 1 else str(path),
+                file_count=file_count,
+                total_rows=total_rows or None,
                 format="csv",
                 size_mb=size_mb,
             )
@@ -240,24 +290,27 @@ def load_dataset(dataset_path: str) -> List[Tuple[str, str]]:
         return _load_csv(path)
     
     if path.is_dir():
-        # 在目录中查找 CSV 文件
-        csv_files = sorted(path.glob('*.csv'))
-        if not csv_files:
-            raise FileNotFoundError(f"目录中没有找到 CSV 文件: {dataset_path}")
-        
-        # 合并所有 CSV
-        all_pairs = []
-        for csv_file in csv_files:
-            try:
-                pairs = _load_csv(csv_file)
-                all_pairs.extend(pairs)
-            except ValueError:
-                continue  # 跳过格式不对的文件
-        
-        if not all_pairs:
-            raise ValueError(f"目录中没有找到有效的 ASR 数据: {dataset_path}")
-        
-        return all_pairs
+        # 先递归查找 CSV 文件
+        csv_files = _find_csv_files(path)
+        if csv_files:
+            # 合并所有 CSV
+            all_pairs = []
+            for csv_file in csv_files:
+                try:
+                    pairs = _load_csv(csv_file)
+                    all_pairs.extend(pairs)
+                except ValueError:
+                    continue  # 跳过格式不对的文件
+            
+            if all_pairs:
+                return all_pairs
+
+        # 再尝试当作 Hugging Face datasets cache 目录读取
+        hf_dir = _find_hf_dataset_dir(path)
+        if hf_dir:
+            return _load_huggingface_directory(hf_dir)
+
+        raise FileNotFoundError(f"目录中没有找到可加载的数据文件: {dataset_path}")
 
     raise ValueError(f"不支持的数据集格式: {dataset_path}")
 
@@ -277,26 +330,7 @@ def _load_csv(path: Path) -> List[Tuple[str, str]]:
             raise ValueError(f"CSV 文件为空: {path}")
 
         # 找到参考文本列和预测文本列
-        ref_col = None
-        hyp_col = None
-        
-        for col in reader.fieldnames:
-            col_lower = col.strip().lower()
-            if col_lower in REF_COLUMNS:
-                ref_col = col
-            elif col_lower in HYP_COLUMNS:
-                hyp_col = col
-
-        if ref_col is None:
-            raise ValueError(
-                f"找不到参考文本列。CSV 列名: {reader.fieldnames}。"
-                f"需要以下之一: {REF_COLUMNS}"
-            )
-        if hyp_col is None:
-            raise ValueError(
-                f"找不到预测文本列。CSV 列名: {reader.fieldnames}。"
-                f"需要以下之一: {HYP_COLUMNS}"
-            )
+        ref_col, hyp_col = _resolve_text_columns(reader.fieldnames)
 
         for row in reader:
             ref = (row.get(ref_col) or "").strip()
@@ -305,3 +339,79 @@ def _load_csv(path: Path) -> List[Tuple[str, str]]:
                 pairs.append((ref, hyp))
 
     return pairs
+
+
+def _resolve_text_columns(fieldnames: List[str]) -> Tuple[str, str]:
+    """在列名列表里定位 reference / hypothesis 两列。"""
+    ref_col = None
+    hyp_col = None
+
+    for col in fieldnames:
+        col_lower = col.strip().lower()
+        if ref_col is None and col_lower in REF_COLUMNS:
+            ref_col = col
+        elif hyp_col is None and col_lower in HYP_COLUMNS:
+            hyp_col = col
+
+    if ref_col is None:
+        raise ValueError(
+            f"找不到参考文本列。CSV/HF 列名: {fieldnames}。"
+            f"需要以下之一: {sorted(REF_COLUMNS)}"
+        )
+    if hyp_col is None:
+        raise ValueError(
+            f"找不到预测文本列。CSV/HF 列名: {fieldnames}。"
+            f"需要以下之一: {sorted(HYP_COLUMNS)}"
+        )
+
+    return ref_col, hyp_col
+
+
+def _load_huggingface_directory(path: Path) -> List[Tuple[str, str]]:
+    """
+    读取 Hugging Face datasets cache 目录中的 Arrow 文件。
+
+    这里兼容的是 `datasets.load_dataset(...)` 生成的本地 cache，
+    不是 `save_to_disk()` 的目录结构。
+    """
+    try:
+        from datasets import Dataset as HFDataset
+    except ImportError as exc:
+        raise ImportError(
+            "检测到 Hugging Face 数据集缓存目录，但当前环境未安装 `datasets`。"
+            "请先安装 `datasets`，或把数据导出成包含 reference + hypothesis 的 CSV。"
+        ) from exc
+
+    arrow_files = sorted(
+        file_path
+        for file_path in path.glob("*.arrow")
+        if file_path.is_file() and not file_path.name.startswith("cache-")
+    )
+    if not arrow_files:
+        raise FileNotFoundError(f"Hugging Face 数据集目录中没有找到 Arrow 文件: {path}")
+
+    all_pairs = []
+    last_column_error = None
+
+    for arrow_file in arrow_files:
+        dataset = HFDataset.from_file(str(arrow_file))
+
+        try:
+            ref_col, hyp_col = _resolve_text_columns(dataset.column_names)
+        except ValueError as exc:
+            last_column_error = exc
+            continue
+
+        for row in dataset:
+            ref = str(row.get(ref_col) or "").strip()
+            hyp = str(row.get(hyp_col) or "").strip()
+            if ref:
+                all_pairs.append((ref, hyp))
+
+    if all_pairs:
+        return all_pairs
+
+    if last_column_error is not None:
+        raise last_column_error
+
+    raise ValueError(f"Hugging Face 数据集中没有找到有效的 ASR 文本对: {path}")

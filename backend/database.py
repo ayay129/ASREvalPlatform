@@ -104,6 +104,7 @@ class Evaluation(Base):
     model_name = Column(String(200), nullable=False, index=True)
     dataset_name = Column(String(200), nullable=False)
     dataset_path = Column(Text, nullable=False)
+    tokenize_mode = Column(String(20), default="auto")  # auto/whisper/char/space
     num_sentences = Column(Integer, default=0)
 
     # ── 语料级指标 ──

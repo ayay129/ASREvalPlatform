@@ -59,6 +59,11 @@ class EvalCreate(BaseModel):
         description="数据集在服务器上的路径（CSV 文件路径或目录路径）",
         examples=["/data/datasets/common-voice-test/test.csv"],
     )
+    tokenize_mode: str = Field(
+        "auto",
+        description="分词模式: auto(自动检测语言) / whisper(Whisper tokenizer) / char(按字符) / space(按空格)",
+        examples=["auto"],
+    )
 
 
 class EvalSummary(BaseModel):

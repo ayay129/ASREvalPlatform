@@ -1,56 +1,284 @@
 """
-eval_engine.py — 评估引擎（Step 1 占位版，Step 2 替换为完整实现）
-==================================================================
+eval_engine.py — 多语言 ASR 评估引擎
+======================================
 
 职责：
-  1. 接收 (reference, hypothesis) 对列表
-  2. 逐句计算 WER / CER / MER / WIL / WIP 等指标
-  3. 汇总语料级指标
-  4. 生成 PDF 报告
+  1. 自动检测文本语言/脚本（Unicode 范围判断）
+  2. 根据语言选择分词策略（空格 / tsheg / 单字符）
+  3. 逐句计算 WER / CER / MER / WIL / WIP
+  4. 汇总语料级指标
+  5. 生成 PDF 报告
 
-本文件在 Step 2 中会被替换为完整实现，
-复用之前写的 tibetan_asr_eval.py 和 tibetan_asr_visualize.py。
+分词策略：
+  tokenize_mode="auto"（默认）：
+    - 藏文 (U+0F00-0FFF)         → 按 tsheg ་ 分音节
+    - 蒙古文 (U+1800-18AF)       → 按空格分词
+    - 中文/日文汉字 (CJK)         → 按单字符分（业界标准）
+    - 日文假名                    → 按单字符分
+    - 泰文/高棉文/缅甸文          → 按单字符分（无空格语言）
+    - 韩文                       → 按空格分词
+    - 阿拉伯文/希伯来文           → 按空格分词
+    - 天城文/孟加拉文等           → 按空格分词
+    - 拉丁/西里尔等              → 按空格分词
+  tokenize_mode="whisper"：
+    - 用 tiktoken 的 multilingual tokenizer
+    - 需要额外 pip install tiktoken
+  tokenize_mode="char"：
+    - 所有语言统一按字符分（最保守）
+  tokenize_mode="space"：
+    - 所有语言统一按空格分
 
-当前版本提供：
-  - compute_all_metrics(pairs) → (sentence_metrics_list, corpus_metrics_dict)
-  - generate_report(sentence_metrics, corpus_metrics, output_path) → None
+接口：
+  compute_all_metrics(pairs, tokenize_mode="auto")
+  generate_report(sentence_metrics, corpus_metrics, output_path)
 """
 
 import re
-from typing import List, Tuple, Dict, Any
+import unicodedata
+from typing import List, Tuple, Dict, Any, Optional
 
 import numpy as np
 
 
 # ──────────────────────────────────────
-# 藏文分词（简化版，Step 2 用完整版替换）
+# 多语言分词系统
+# ──────────────────────────────────────
+
+# Unicode 范围 → 脚本名称 → 分词策略
+# 每个元组: (起始码, 结束码, 脚本名, 分词方式)
+#   "tsheg"  = 按藏文音节分隔符 ་ 切
+#   "char"   = 按单字符切（没有空格的语言）
+#   "space"  = 按空格切
+SCRIPT_RANGES = [
+    # 藏文：按 tsheg 切
+    (0x0F00, 0x0FFF, "tibetan",    "tsheg"),
+
+    # CJK 汉字：按单字符切
+    (0x4E00, 0x9FFF, "cjk",        "char"),   # 基本汉字
+    (0x3400, 0x4DBF, "cjk",        "char"),   # 扩展A
+    (0x20000, 0x2A6DF, "cjk",      "char"),   # 扩展B
+    (0x2A700, 0x2B73F, "cjk",      "char"),   # 扩展C
+    (0xF900, 0xFAFF, "cjk",        "char"),   # 兼容汉字
+
+    # 日文假名：按单字符切
+    (0x3040, 0x309F, "hiragana",   "char"),
+    (0x30A0, 0x30FF, "katakana",   "char"),
+
+    # 泰文/老挝文/缅甸文/高棉文：按单字符切（没有空格分词的语言）
+    (0x0E00, 0x0E7F, "thai",       "char"),
+    (0x0E80, 0x0EFF, "lao",        "char"),
+    (0x1000, 0x109F, "myanmar",    "char"),
+    (0x1780, 0x17FF, "khmer",      "char"),
+
+    # 以下语言有空格，按空格切
+    (0x1800, 0x18AF, "mongolian",  "space"),   # 蒙古文
+    (0xAC00, 0xD7AF, "hangul",     "space"),   # 韩文音节
+    (0x1100, 0x11FF, "hangul",     "space"),   # 韩文字母
+    (0x0600, 0x06FF, "arabic",     "space"),   # 阿拉伯文
+    (0x0590, 0x05FF, "hebrew",     "space"),   # 希伯来文
+    (0x0900, 0x097F, "devanagari", "space"),   # 天城文（印地语等）
+    (0x0980, 0x09FF, "bengali",    "space"),   # 孟加拉文
+    (0x0A80, 0x0AFF, "gujarati",   "space"),   # 古吉拉特文
+    (0x0B80, 0x0BFF, "tamil",      "space"),   # 泰米尔文
+    (0x0C00, 0x0C7F, "telugu",     "space"),   # 泰卢固文
+    (0x0C80, 0x0CFF, "kannada",    "space"),   # 卡纳达文
+    (0x0D00, 0x0D7F, "malayalam",  "space"),   # 马拉雅拉姆文
+    (0x0400, 0x04FF, "cyrillic",   "space"),   # 西里尔文（俄语等）
+    (0x0370, 0x03FF, "greek",      "space"),   # 希腊文
+    (0x10A0, 0x10FF, "georgian",   "space"),   # 格鲁吉亚文
+    (0x0530, 0x058F, "armenian",   "space"),   # 亚美尼亚文
+    (0x1200, 0x137F, "ethiopic",   "space"),   # 埃塞俄比亚文
+]
+
+# 拉丁文兜底：ASCII + Latin Extended 都算拉丁，按空格切
+LATIN_RANGES = [(0x0041, 0x024F)]
+
+
+def detect_script(text: str) -> Tuple[str, str]:
+    """
+    检测文本的主要脚本和对应的分词策略。
+
+    原理：统计文本中每个字符属于哪个 Unicode 脚本区间，
+    取出现次数最多的脚本作为该文本的语言。
+
+    Returns:
+        (script_name, tokenize_strategy)
+        如 ("tibetan", "tsheg") 或 ("cjk", "char") 或 ("cyrillic", "space")
+    """
+    script_counts: Dict[str, int] = {}
+    strategy_map: Dict[str, str] = {}
+
+    for ch in text:
+        cp = ord(ch)
+
+        # 跳过空格、标点、数字
+        if ch.isspace() or ch.isdigit():
+            continue
+        if unicodedata.category(ch).startswith('P'):
+            continue
+
+        # 在已知脚本范围里查找
+        found = False
+        for start, end, script, strategy in SCRIPT_RANGES:
+            if start <= cp <= end:
+                script_counts[script] = script_counts.get(script, 0) + 1
+                strategy_map[script] = strategy
+                found = True
+                break
+
+        # 拉丁文兜底
+        if not found:
+            for start, end in LATIN_RANGES:
+                if start <= cp <= end:
+                    script_counts["latin"] = script_counts.get("latin", 0) + 1
+                    strategy_map["latin"] = "space"
+                    found = True
+                    break
+
+        # 还没找到，归入 unknown
+        if not found:
+            script_counts["unknown"] = script_counts.get("unknown", 0) + 1
+            strategy_map["unknown"] = "space"
+
+    if not script_counts:
+        return ("unknown", "space")
+
+    # 取出现最多的脚本
+    dominant = max(script_counts, key=script_counts.get)
+    return (dominant, strategy_map[dominant])
+
+
+# ──────────────────────────────────────
+# 各分词策略的具体实现
 # ──────────────────────────────────────
 
 TSHEG = '\u0F0B'  # 藏文音节分隔符 ་
 
 
 def _normalize(text: str) -> str:
-    """基本文本规范化"""
+    """通用文本规范化：去首尾空白，合并连续空格"""
     text = text.strip()
     text = re.sub(r'\s+', ' ', text)
-    text = text.rstrip(TSHEG).rstrip()
     return text
 
 
-def _tokenize_syllables(text: str) -> list:
-    """按 tsheg 分音节"""
+def _tokenize_by_space(text: str) -> list:
+    """
+    按空格分词。
+    适用于：英语、法语、德语、俄语、蒙古语、韩语、阿拉伯语、印地语等。
+    去除标点后按空格切分。
+    """
     text = _normalize(text)
+    # 去除标点（保留字母、数字、空格）
+    text = re.sub(r'[^\w\s]', '', text, flags=re.UNICODE)
+    tokens = text.split()
+    return [t for t in tokens if t]
+
+
+def _tokenize_by_tsheg(text: str) -> list:
+    """
+    按藏文 tsheg 分音节。
+    适用于：藏语。
+    tsheg (་ U+0F0B) 是藏文的音节分隔符。
+    同时也按空格和 shad (། U+0F0D) 切分。
+    """
+    text = _normalize(text)
+    text = text.rstrip(TSHEG).rstrip()
     if not text:
         return []
     tokens = re.split(r'[\u0F0B\s\u0F0D\u0F0E]+', text)
     return [t for t in tokens if t.strip()]
 
 
-def _tokenize_chars(text: str) -> list:
-    """按字符分"""
+def _tokenize_by_char(text: str) -> list:
+    """
+    按单字符分词。
+    适用于：中文、日文、泰文、缅甸文、高棉文等无空格语言。
+    去除空格和标点后，每个字符算一个 token。
+    对中文 ASR 来说，WER 按字计算就是业界标准的 CER。
+    """
     text = _normalize(text)
-    text = re.sub(r'[\u0F0B\s\u0F0D\u0F0E]', '', text)
-    return list(text)
+    # 去除空格和标点
+    chars = []
+    for ch in text:
+        if ch.isspace():
+            continue
+        if unicodedata.category(ch).startswith('P'):
+            continue
+        chars.append(ch)
+    return chars
+
+
+def _tokenize_by_whisper(text: str) -> list:
+    """
+    用 Whisper 的 multilingual tokenizer 分词。
+    需要安装 tiktoken：pip install tiktoken
+    这样分出来的 token 和模型内部一致。
+    """
+    try:
+        import tiktoken
+        enc = tiktoken.get_encoding("cl100k_base")
+        token_ids = enc.encode(text)
+        tokens = [enc.decode([tid]) for tid in token_ids]
+        return [t for t in tokens if t.strip()]
+    except ImportError:
+        print("[WARN] tiktoken 未安装，回退到 auto 模式")
+        return tokenize_for_wer(text, mode="auto")
+
+
+def tokenize_for_wer(text: str, mode: str = "auto") -> list:
+    """
+    WER 计算用的分词入口。
+
+    这是整个分词系统的统一入口。
+    外部只需要调这一个函数，传入 mode 参数即可。
+
+    Args:
+        text: 要分词的文本
+        mode: 分词模式
+              "auto"    - 自动检测语言，选对应策略（默认）
+              "whisper" - 用 Whisper tokenizer
+              "char"    - 强制按字符分
+              "space"   - 强制按空格分
+
+    Returns:
+        token 列表，如 ["བོད", "སྐད", "ཀྱི"] 或 ["你", "好", "世", "界"]
+    """
+    if mode == "whisper":
+        return _tokenize_by_whisper(text)
+    elif mode == "char":
+        return _tokenize_by_char(text)
+    elif mode == "space":
+        return _tokenize_by_space(text)
+    elif mode == "auto":
+        _, strategy = detect_script(text)
+        if strategy == "tsheg":
+            return _tokenize_by_tsheg(text)
+        elif strategy == "char":
+            return _tokenize_by_char(text)
+        else:
+            return _tokenize_by_space(text)
+    else:
+        return _tokenize_by_space(text)
+
+
+def tokenize_for_cer(text: str) -> list:
+    """
+    CER 计算用的字符分词。
+    所有语言统一：去除空格和标点后按字符切。
+    """
+    text = _normalize(text)
+    chars = []
+    for ch in text:
+        if ch.isspace():
+            continue
+        # 藏文分隔符也去掉
+        if ch in ('\u0F0B', '\u0F0D', '\u0F0E', '\u0F14'):
+            continue
+        if unicodedata.category(ch).startswith('P'):
+            continue
+        chars.append(ch)
+    return chars
 
 
 # ──────────────────────────────────────
@@ -111,26 +339,31 @@ def _levenshtein_ops(ref: list, hyp: list):
 
 def compute_all_metrics(
     pairs: List[Tuple[str, str]],
+    tokenize_mode: str = "auto",
 ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     """
     计算所有指标。
     
     Args:
         pairs: [(reference, hypothesis), ...] 列表
+        tokenize_mode: 分词模式 "auto"/"whisper"/"char"/"space"
     
     Returns:
         (sentence_metrics_list, corpus_metrics_dict)
-        
-        sentence_metrics_list: 每条句子的指标字典列表
-        corpus_metrics_dict: 语料级汇总指标
     """
     sentence_metrics = []
 
+    # 检测第一条数据的语言（用于日志）
+    if pairs:
+        script, strategy = detect_script(pairs[0][0])
+        print(f"[INFO] 检测到脚本: {script}, 分词策略: "
+              f"{tokenize_mode if tokenize_mode != 'auto' else strategy}")
+
     for idx, (ref_text, hyp_text) in enumerate(pairs):
-        ref_words = _tokenize_syllables(ref_text)
-        hyp_words = _tokenize_syllables(hyp_text)
-        ref_chars = _tokenize_chars(ref_text)
-        hyp_chars = _tokenize_chars(hyp_text)
+        ref_words = tokenize_for_wer(ref_text, mode=tokenize_mode)
+        hyp_words = tokenize_for_wer(hyp_text, mode=tokenize_mode)
+        ref_chars = tokenize_for_cer(ref_text)
+        hyp_chars = tokenize_for_cer(hyp_text)
 
         # 音节级编辑操作
         w_sub, w_ins, w_del, w_cor = _levenshtein_ops(ref_words, hyp_words)

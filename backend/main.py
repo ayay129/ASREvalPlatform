@@ -121,6 +121,7 @@ def create_evaluation(
         model_name=req.model_name,
         dataset_name=req.dataset_name,
         dataset_path=req.dataset_path,
+        tokenize_mode=req.tokenize_mode,
         status="pending",
     )
     db.add(evaluation)
@@ -375,7 +376,10 @@ def run_evaluation(eval_id: int):
         # 这里先用占位逻辑，Step 2 替换为真实实现
         from eval_engine import compute_all_metrics
 
-        sentence_metrics, corpus_metrics = compute_all_metrics(pairs)
+        sentence_metrics, corpus_metrics = compute_all_metrics(
+            pairs,
+            tokenize_mode=evaluation.tokenize_mode or "auto",
+        )
 
         # ── 4. 保存逐句明细 ──
         detail_objects = []
