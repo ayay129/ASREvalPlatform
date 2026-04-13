@@ -114,11 +114,13 @@ class HuggingFaceSourceAdapter(SourceAdapter):
         config_name: Optional[str] = None,
         revision: Optional[str] = None,
         cache_dir: Optional[str] = None,
+        trust_remote_code: bool = False,
     ) -> None:
         self.dataset_id = dataset_id
         self.config_name = config_name
         self.revision = revision
         self.cache_dir = cache_dir
+        self.trust_remote_code = trust_remote_code
 
     def load_split(self, split_name: str) -> Dataset:
         dataset_path = Path(self.dataset_id).expanduser()
@@ -138,13 +140,22 @@ class HuggingFaceSourceAdapter(SourceAdapter):
                 )
             return dataset_or_dict[split_name]
 
-        return load_dataset(
-            path=self.dataset_id,
-            name=self.config_name,
-            split=split_name,
-            revision=self.revision,
-            cache_dir=self.cache_dir,
-        )
+        try:
+            return load_dataset(
+                path=self.dataset_id,
+                name=self.config_name,
+                split=split_name,
+                revision=self.revision,
+                cache_dir=self.cache_dir,
+                trust_remote_code=self.trust_remote_code,
+            )
+        except ValueError as exc:
+            if "Config name is missing" in str(exc):
+                raise ManifestPreparationError(
+                    "该 Hugging Face 数据集有多个配置，必须显式传 `--config-name` "
+                    "或 `--dataset-config`，例如 `--config-name mn`。"
+                ) from exc
+            raise
 
     @staticmethod
     def _is_saved_dataset_dir(dataset_path: Path) -> bool:
@@ -162,6 +173,7 @@ class HuggingFaceSourceAdapter(SourceAdapter):
             "config_name": self.config_name,
             "revision": self.revision,
             "cache_dir": self.cache_dir,
+            "trust_remote_code": self.trust_remote_code,
         }
 
 
@@ -367,9 +379,20 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Prepare training manifests for Whisper-Finetune")
     parser.add_argument("--source-type", choices=["huggingface"], default="huggingface")
     parser.add_argument("--dataset-id", required=True, help="Hugging Face dataset repo id")
-    parser.add_argument("--config-name", default=None, help="Hugging Face dataset config name")
+    parser.add_argument(
+        "--config-name",
+        "--dataset-config",
+        dest="config_name",
+        default=None,
+        help="Hugging Face dataset config name, e.g. `mn` for Common Voice Mongolian",
+    )
     parser.add_argument("--revision", default=None, help="Hugging Face dataset revision")
     parser.add_argument("--cache-dir", default=None, help="datasets cache dir")
+    parser.add_argument(
+        "--trust-remote-code",
+        action="store_true",
+        help="Allow datasets.load_dataset to execute dataset repository custom code",
+    )
     parser.add_argument("--train-split", required=True, help="Train split name")
     parser.add_argument("--test-split", required=True, help="Test split name")
     parser.add_argument("--audio-column", default="audio", help="Audio column name")
@@ -390,6 +413,7 @@ def build_adapter(args: argparse.Namespace) -> SourceAdapter:
             config_name=args.config_name,
             revision=args.revision,
             cache_dir=args.cache_dir,
+            trust_remote_code=args.trust_remote_code,
         )
 
     raise ManifestPreparationError(f"不支持的数据源类型: {args.source_type}")
