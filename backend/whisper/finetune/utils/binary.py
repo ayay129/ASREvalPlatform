@@ -39,6 +39,7 @@ class DatasetReader(object):
     def __init__(self, data_header_path, min_duration=0, max_duration=30):
         self.keys = []
         self.offset_dict = {}
+        self.total_duration = 0.0
         self.fp = open(data_header_path.replace('.header', '.data'), 'rb')
         self.m = mmap.mmap(self.fp.fileno(), 0, access=mmap.ACCESS_READ)
         for line in tqdm(open(data_header_path, 'rb'), desc='读取数据列表'):
@@ -53,6 +54,7 @@ class DatasetReader(object):
                 continue
             self.keys.append(key)
             self.offset_dict[key] = (int(val_pos), int(val_len))
+            self.total_duration += float(data["duration"])
 
     # 获取一行列表数据
     def get_data(self, key):

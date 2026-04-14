@@ -17,6 +17,7 @@ add_arg = functools.partial(add_arguments, argparser=parser)
 add_arg("train_data",    type=str, default="dataset/train.json",       help="训练数据集的路径")
 add_arg("test_data",     type=str, default="dataset/test.json",        help="测试数据集的路径")
 add_arg("base_model",    type=str, default="openai/whisper-tiny",      help="Whisper的基础模型")
+add_arg("train_mode",    type=str, default="lora",                     help="训练模式，可选 lora 或 full")
 add_arg("output_dir",    type=str, default="output/",                  help="训练保存模型的路径")
 add_arg("warmup_steps",  type=int, default=50,      help="训练预热步数")
 add_arg("logging_steps", type=int, default=100,     help="打印日志步数")
@@ -51,7 +52,32 @@ if platform.system() == "Windows":
     args.num_workers = 0
 
 
+def print_parameter_counts(model):
+    trainable_params = sum(param.numel() for param in model.parameters() if param.requires_grad)
+    all_params = sum(param.numel() for param in model.parameters())
+    ratio = 100 * trainable_params / all_params if all_params else 0.0
+    print(f"trainable params: {trainable_params:,} || all params: {all_params:,} || trainable%: {ratio:.4f}")
+
+
+def print_dataset_summary(name, dataset):
+    total_count = len(dataset)
+    total_duration_seconds = float(getattr(dataset, "total_duration", 0.0))
+    total_duration_minutes = total_duration_seconds / 60 if total_duration_seconds else 0.0
+    total_duration_hours = total_duration_seconds / 3600 if total_duration_seconds else 0.0
+    avg_duration_seconds = total_duration_seconds / total_count if total_count else 0.0
+    print(
+        f"{name}数据统计: 音频数={total_count}, "
+        f"总时长={total_duration_seconds:.1f}s / {total_duration_minutes:.2f}min / {total_duration_hours:.2f}h, "
+        f"平均时长={avg_duration_seconds:.2f}s"
+    )
+
+
 def main():
+    if args.train_mode not in {"lora", "full"}:
+        raise ValueError(f"不支持的 train_mode: {args.train_mode}，可选值为 `lora` 或 `full`")
+    if args.train_mode == "full" and args.use_8bit:
+        raise ValueError("全量微调不支持 `--use_8bit=True`，如果要全量微调请关闭 8bit 量化。")
+
     # 获取Whisper的数据处理器，这个包含了特征提取器、tokenizer
     processor = WhisperProcessor.from_pretrained(args.base_model,
                                                  language=args.language,
@@ -74,6 +100,8 @@ def main():
                                  min_duration=args.min_audio_len,
                                  max_duration=args.max_audio_len)
     print(f"训练数据：{len(train_dataset)}，测试数据：{len(test_dataset)}")
+    print_dataset_summary("训练", train_dataset)
+    print_dataset_summary("测试", test_dataset)
     # 数据padding器
     data_collator = DataCollatorSpeechSeq2SeqWithPadding(processor=processor)
 
@@ -86,33 +114,36 @@ def main():
 
     # 获取模型
     model = WhisperForConditionalGeneration.from_pretrained(args.base_model,
-                                                            load_in_8bit=args.use_8bit,
+                                                            load_in_8bit=args.use_8bit if args.train_mode == "lora" else False,
                                                             device_map=device_map,
                                                             local_files_only=args.local_files_only)
     model.config.forced_decoder_ids = None
     model.config.suppress_tokens = []
-    # 量化模型
-    model = prepare_model_for_kbit_training(model)
-    # 注册forward，否则多卡训练会失败
-    model.model.encoder.conv1.register_forward_hook(make_inputs_require_grad)
+    if args.train_mode == "lora":
+        # 量化模型
+        model = prepare_model_for_kbit_training(model)
+        # 注册forward，否则多卡训练会失败
+        model.model.encoder.conv1.register_forward_hook(make_inputs_require_grad)
 
-    print('加载LoRA模块...')
-    if args.resume_from_checkpoint:
-        # 恢复训练时加载Lora参数
-        print("Loading adapters from checkpoint.")
-        model = PeftModel.from_pretrained(model, args.resume_from_checkpoint, is_trainable=True)
-    else:
-        print(f'adding LoRA modules...')
-        target_modules = ["k_proj", "q_proj", "v_proj", "out_proj", "fc1", "fc2"]
-        print(target_modules)
-        if args.use_adalora:
-            total_step = args.num_train_epochs * len(train_dataset)
-            config = AdaLoraConfig(init_r=12, target_r=4, beta1=0.85, beta2=0.85, tinit=200, tfinal=1000, deltaT=10,
-                                   lora_alpha=32, lora_dropout=0.1, orth_reg_weight=0.5, target_modules=target_modules,
-                                   total_step=total_step)
+        print('加载LoRA模块...')
+        if args.resume_from_checkpoint:
+            # 恢复训练时加载Lora参数
+            print("Loading adapters from checkpoint.")
+            model = PeftModel.from_pretrained(model, args.resume_from_checkpoint, is_trainable=True)
         else:
-            config = LoraConfig(r=32, lora_alpha=64, target_modules=target_modules, lora_dropout=0.05, bias="none")
-        model = get_peft_model(model, config)
+            print('adding LoRA modules...')
+            target_modules = ["k_proj", "q_proj", "v_proj", "out_proj", "fc1", "fc2"]
+            print(target_modules)
+            if args.use_adalora:
+                total_step = args.num_train_epochs * len(train_dataset)
+                config = AdaLoraConfig(init_r=12, target_r=4, beta1=0.85, beta2=0.85, tinit=200, tfinal=1000, deltaT=10,
+                                       lora_alpha=32, lora_dropout=0.1, orth_reg_weight=0.5, target_modules=target_modules,
+                                       total_step=total_step)
+            else:
+                config = LoraConfig(r=32, lora_alpha=64, target_modules=target_modules, lora_dropout=0.05, bias="none")
+            model = get_peft_model(model, config)
+    else:
+        print('使用全量微调模式，不加载LoRA/AdaLoRA模块。')
 
     if args.base_model.endswith("/"):
         args.base_model = args.base_model[:-1]
@@ -146,9 +177,13 @@ def main():
 
     if training_args.local_rank == 0 or training_args.local_rank == -1:
         print('=' * 90)
-        model.print_trainable_parameters()
+        if args.train_mode == "lora":
+            model.print_trainable_parameters()
+        else:
+            print_parameter_counts(model)
         print('=' * 90)
 
+    callbacks = [SavePeftModelCallback] if args.train_mode == "lora" else []
     # 定义训练器
     trainer = Seq2SeqTrainer(args=training_args,
                              model=model,
@@ -156,7 +191,7 @@ def main():
                              eval_dataset=test_dataset,
                              data_collator=data_collator,
                              processing_class=processor.feature_extractor,
-                             callbacks=[SavePeftModelCallback])
+                             callbacks=callbacks)
     model.config.use_cache = False
     trainer._load_from_checkpoint = load_from_checkpoint
 
@@ -168,7 +203,9 @@ def main():
     # 重新启用缓存以更快地推断
     model.config.use_cache = True
     if training_args.local_rank == 0 or training_args.local_rank == -1:
-        model.save_pretrained(os.path.join(output_dir, "checkpoint-final"))
+        final_dir = os.path.join(output_dir, "checkpoint-final")
+        model.save_pretrained(final_dir)
+        processor.save_pretrained(final_dir)
     # 是否把模型参数文件推送到huggingface
     if training_args.push_to_hub:
         hub_model_id = args.hub_model_id if args.hub_model_id is not None else output_dir

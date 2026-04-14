@@ -56,6 +56,7 @@ class CustomDataset(Dataset):
         self.max_duration = max_duration
         self.min_sentence = min_sentence
         self.max_sentence = max_sentence
+        self.total_duration = 0.0
         self.vocab = self.processor.tokenizer.get_vocab()
         self.startoftranscript = self.vocab['<|startoftranscript|>']
         self.endoftext = self.vocab['<|endoftext|>']
@@ -85,6 +86,7 @@ class CustomDataset(Dataset):
                                                 min_duration=self.min_duration,
                                                 max_duration=self.max_duration)
             self.data_list = self.dataset_reader.get_keys()
+            self.total_duration = self.dataset_reader.total_duration
         else:
             # 获取数据列表
             with open(self.data_list_path, 'r', encoding='utf-8') as f:
@@ -110,6 +112,7 @@ class CustomDataset(Dataset):
                     if sentence_len < self.min_sentence or sentence_len > self.max_sentence:
                         continue
                 self.data_list.append(dict(line))
+                self.total_duration += float(line["duration"])
 
     # 从数据列表里面获取音频数据、采样率和文本
     def _get_list_data(self, idx):
