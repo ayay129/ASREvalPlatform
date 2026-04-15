@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useState } from 'react'
+import { Fragment, useCallback, useEffect, useState } from 'react'
 import {
   RefreshCw, Download, Copy, Eye, Trash2, X, Cloud, HardDrive,
-  FileText, FileJson,
+  FileText, FileJson, AlertTriangle, ChevronDown, ChevronRight,
 } from 'lucide-react'
 import { api } from '../api'
 import { COLORS } from '../theme'
@@ -44,6 +44,7 @@ export default function Datasets() {
 
   const [pullOpen, setPullOpen] = useState(false)
   const [previewing, setPreviewing] = useState(null) // {ds, data}
+  const [expandedPullId, setExpandedPullId] = useState(null)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -241,24 +242,70 @@ export default function Datasets() {
           <table style={{ width: '100%', borderCollapse: 'collapse' }}>
             <thead>
               <tr style={{ background: COLORS.secondary1 + '40' }}>
+                <th style={{ ...th, fontSize: 11, width: 30 }}></th>
                 {['Repo', 'Revision', 'Status', 'Registered', 'Local dir', 'Finished'].map(h => (
                   <th key={h} style={{ ...th, fontSize: 11 }}>{h}</th>
                 ))}
               </tr>
             </thead>
             <tbody>
-              {recentPulls.map(p => (
-                <tr key={p.id} style={{ borderTop: `1px solid ${COLORS.border}` }}>
-                  <td style={td}><code>{p.repo_id}</code></td>
-                  <td style={td}>{p.revision || 'main'}</td>
-                  <td style={td}><StatusBadge status={p.status} /></td>
-                  <td style={td}>{p.registered_count}</td>
-                  <td style={{ ...td, fontFamily: 'ui-monospace,Menlo,monospace', fontSize: 11, color: COLORS.textLight }}>
-                    {p.local_dir || '—'}
-                  </td>
-                  <td style={{ ...td, fontSize: 11, color: COLORS.textLight }}>{fmtDate(p.completed_at)}</td>
-                </tr>
-              ))}
+              {recentPulls.map(p => {
+                const hasDetail = !!(p.error_message || p.log_tail)
+                const isFailed = p.status === 'failed'
+                const expanded = expandedPullId === p.id
+                return (
+                  <Fragment key={p.id}>
+                    <tr
+                      style={{
+                        borderTop: `1px solid ${COLORS.border}`,
+                        background: isFailed ? COLORS.danger + '08' : 'transparent',
+                        cursor: hasDetail ? 'pointer' : 'default',
+                      }}
+                      onClick={() => hasDetail && setExpandedPullId(expanded ? null : p.id)}
+                    >
+                      <td style={{ ...td, color: COLORS.textLight }}>
+                        {hasDetail
+                          ? (expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />)
+                          : null}
+                      </td>
+                      <td style={td}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                          {isFailed && <AlertTriangle size={13} style={{ color: COLORS.danger }} />}
+                          <code>{p.repo_id}</code>
+                        </div>
+                      </td>
+                      <td style={td}>{p.revision || 'main'}</td>
+                      <td style={td}><StatusBadge status={p.status} /></td>
+                      <td style={td}>{p.registered_count}</td>
+                      <td style={{ ...td, fontFamily: 'ui-monospace,Menlo,monospace', fontSize: 11, color: COLORS.textLight }}>
+                        {p.local_dir || '—'}
+                      </td>
+                      <td style={{ ...td, fontSize: 11, color: COLORS.textLight }}>{fmtDate(p.completed_at)}</td>
+                    </tr>
+                    {expanded && (
+                      <tr style={{ background: isFailed ? COLORS.danger + '06' : COLORS.bg }}>
+                        <td />
+                        <td colSpan={6} style={{ padding: '10px 14px 16px' }}>
+                          {p.error_message && (
+                            <div style={pullErrorBox}>
+                              <div style={{ fontWeight: 600, marginBottom: 4 }}>Error</div>
+                              <div style={{ whiteSpace: 'pre-wrap' }}>{p.error_message}</div>
+                            </div>
+                          )}
+                          {p.log_tail && (
+                            <div>
+                              <div style={{ fontSize: 11, fontWeight: 600, color: COLORS.textMid, marginBottom: 4 }}>
+                                Log tail
+                              </div>
+                              <pre style={pullLogPre}>{p.log_tail}</pre>
+                            </div>
+                          )}
+                        </td>
+                      </tr>
+                    )}
+                  </Fragment>
+                )
+              })}
             </tbody>
           </table>
         </div>
@@ -547,4 +594,22 @@ const previewPre = {
   background: COLORS.bg, padding: 12, borderRadius: 8,
   overflow: 'auto', fontFamily: 'ui-monospace,Menlo,monospace',
   color: COLORS.textDark,
+}
+
+const pullErrorBox = {
+  padding: '10px 12px', borderRadius: 6,
+  background: COLORS.danger + '12',
+  border: `1px solid ${COLORS.danger}30`,
+  color: COLORS.danger,
+  fontSize: 12, marginBottom: 10,
+  fontFamily: 'ui-monospace,Menlo,monospace',
+}
+
+const pullLogPre = {
+  fontSize: 11, lineHeight: 1.5,
+  background: '#1e2a3a', color: '#cfe3ff',
+  padding: 12, borderRadius: 6, margin: 0,
+  overflow: 'auto', maxHeight: 240,
+  fontFamily: 'ui-monospace,Menlo,monospace',
+  whiteSpace: 'pre-wrap', wordBreak: 'break-all',
 }

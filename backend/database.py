@@ -354,6 +354,11 @@ class DatasetPull(Base):
     revision = Column(String(128), nullable=True)
     local_dir = Column(Text, nullable=True)   # worker 填入实际落盘目录
 
+    # 子集过滤：逗号分隔的 glob 模式，传给 snapshot_download(allow_patterns=...)
+    # 例如只拉蒙古语: "transcript/mn/**,audio/mn/**"
+    # 留空 = 全量下载
+    allow_patterns = Column(Text, nullable=True)
+
     status = Column(String(20), default="queued", index=True)  # queued/running/completed/failed
     error_message = Column(Text, nullable=True)
     log_tail = Column(Text, nullable=True)    # 保存最后几行 stdout，便于前端展示
@@ -411,6 +416,27 @@ def _migrate_train_runs():
             print(f"[DB] Added column train_runs.{name}")
 
 
+def _migrate_dataset_pulls():
+    """给老的 dataset_pulls 表补齐新列（同 _migrate_train_runs 思路）。"""
+    expected_columns = {
+        "allow_patterns": "TEXT",
+    }
+
+    inspector = inspect(engine)
+    if "dataset_pulls" not in inspector.get_table_names():
+        return
+
+    existing = {col["name"] for col in inspector.get_columns("dataset_pulls")}
+    missing = [(name, ddl) for name, ddl in expected_columns.items() if name not in existing]
+    if not missing:
+        return
+
+    with engine.begin() as conn:
+        for name, ddl in missing:
+            conn.execute(text(f"ALTER TABLE dataset_pulls ADD COLUMN {name} {ddl}"))
+            print(f"[DB] Added column dataset_pulls.{name}")
+
+
 def init_db():
     """
     初始化数据库：创建所有表（如果不存在），并给老表补齐新列。
@@ -418,6 +444,7 @@ def init_db():
     """
     Base.metadata.create_all(bind=engine)
     _migrate_train_runs()
+    _migrate_dataset_pulls()
 
 
 def get_db():

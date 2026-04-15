@@ -520,11 +520,9 @@ def _run_huggingface_pull(pull_id: int) -> None:
     try:
         from huggingface_hub import snapshot_download
     except ImportError:
-        _finish_dataset_pull(
-            pull_id,
-            status="failed",
-            error="huggingface_hub not installed. `pip install huggingface_hub`",
-        )
+        msg = "huggingface_hub not installed. `pip install huggingface_hub`"
+        print(f"[WORKER] HF pull #{pull_id} FAILED: {msg}")
+        _finish_dataset_pull(pull_id, status="failed", error=msg)
         return
 
     target_dir = Path(DATASET_BASE_DIR) / _repo_slug(repo_id)
@@ -547,13 +545,26 @@ def _run_huggingface_pull(pull_id: int) -> None:
             local_dir_use_symlinks=False,
         )
         log_lines.append("snapshot_download done")
+        print(f"[WORKER] HF pull #{pull_id} snapshot_download done → {target_dir}")
     except Exception as exc:
-        log_lines.append(f"snapshot_download FAILED: {exc}")
+        # 常见错误做个人类可读提示，特别是 gated repo 的 401/403
+        err_str = str(exc)
+        hint = ""
+        low = err_str.lower()
+        if "401" in err_str or "403" in err_str or "gated" in low or "restricted" in low or "authoriz" in low:
+            hint = (
+                "\nHINT: this repo looks gated/private. Either:"
+                "\n  1) open the repo page on HuggingFace and accept its license,"
+                "\n     then `huggingface-cli login` in the env that runs the worker, or"
+                "\n  2) export HF_TOKEN=<your read token> before launching the worker."
+            )
+        log_lines.append(f"snapshot_download FAILED: {exc}{hint}")
+        print(f"[WORKER] HF pull #{pull_id} FAILED (snapshot_download): {exc}{hint}")
         _finish_dataset_pull(
             pull_id,
             status="failed",
             local_dir=str(target_dir),
-            error=str(exc),
+            error=f"{exc}{hint}",
             log_tail="\n".join(log_lines),
         )
         return
@@ -574,6 +585,7 @@ def _run_huggingface_pull(pull_id: int) -> None:
         )
     except Exception as exc:
         log_lines.append(f"scan FAILED: {exc}")
+        print(f"[WORKER] HF pull #{pull_id} FAILED (scan): {exc}")
         _finish_dataset_pull(
             pull_id,
             status="failed",
@@ -602,6 +614,7 @@ def process_one_dataset_pull() -> bool:
     try:
         _run_huggingface_pull(pull_id)
     except Exception as exc:
+        print(f"[WORKER] HF pull #{pull_id} FAILED (unexpected): {exc}")
         _finish_dataset_pull(pull_id, status="failed", error=f"unexpected: {exc}")
     return True
 
