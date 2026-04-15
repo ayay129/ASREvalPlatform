@@ -24,6 +24,7 @@ API 路由总览：
   uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 """
 
+import json
 import os
 from datetime import datetime
 from typing import Optional
@@ -33,19 +34,26 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
-from database import init_db, get_db, Evaluation, EvaluationDetail, TrainRun, Dataset, DatasetPull
+from database import (
+    init_db, get_db,
+    Evaluation, EvaluationDetail, TrainRun,
+    Dataset, DatasetPull, DatasetPrepJob,
+)
 from schemas import (
     EvalCreate, EvalSummary, EvalFullResponse, EvalDetailItem,
     EditOpsBreakdown, WerDistribution,
     DatasetListResponse,
     DatasetOut, DatasetPreview, ScanResponse,
     DatasetPullCreate, DatasetPullOut,
+    CVProbeResponse, CVLanguageInfo, CVSplitInfo,
+    DatasetPrepCreate, DatasetPrepOut,
     TrainRunCreate, TrainRunSummary, TrainRunDetail,
     CompareRequest, CompareResponse, CompareItem,
     MessageResponse,
 )
 from dataset_loader import scan_datasets, load_dataset, DATASET_BASE_DIR
 from dataset_registry import scan_and_upsert, preview_dataset
+from dataset_prep import probe_cv_layout
 
 
 # ──────────────────────────────────────
@@ -212,6 +220,104 @@ def delete_dataset_pull(pull_id: int, db: Session = Depends(get_db)):
     db.delete(pull)
     db.commit()
     return MessageResponse(message=f"Pull job {pull_id} deleted")
+
+
+@app.get(
+    "/api/dataset-pulls/{pull_id}/cv-probe",
+    response_model=CVProbeResponse,
+    tags=["数据集"],
+)
+def cv_probe_pull(pull_id: int, db: Session = Depends(get_db)):
+    """
+    检查这次 pull 的落盘目录是不是 Common Voice 风格，
+    返回可处理的语言 + splits，供前端渲染 Prepare 弹窗。
+    """
+    pull = db.query(DatasetPull).filter(DatasetPull.id == pull_id).first()
+    if not pull:
+        raise HTTPException(status_code=404, detail=f"Pull job {pull_id} not found")
+    if not pull.local_dir:
+        raise HTTPException(status_code=400, detail="Pull has no local_dir yet")
+
+    probe = probe_cv_layout(pull.local_dir)
+    return CVProbeResponse(
+        base_dir=probe.base_dir,
+        is_cv=probe.is_cv,
+        languages=[
+            CVLanguageInfo(
+                lang=lang.lang,
+                transcript_dir=lang.transcript_dir,
+                audio_dir=lang.audio_dir,
+                has_clip_durations=lang.has_clip_durations,
+                splits=[
+                    CVSplitInfo(
+                        name=s.name,
+                        tsv_path=s.tsv_path,
+                        tar_count=len(s.tar_paths),
+                        rows=s.rows,
+                    )
+                    for s in lang.splits
+                ],
+            )
+            for lang in probe.languages
+        ],
+    )
+
+
+# ── 数据集预处理任务 ──
+
+@app.post("/api/dataset-prep-jobs", response_model=DatasetPrepOut, tags=["数据集"])
+def create_dataset_prep_job(req: DatasetPrepCreate, db: Session = Depends(get_db)):
+    """
+    提交一个预处理任务（目前只处理 Common Voice 风格的目录）。
+    worker 会：解 tar → join TSV + durations → 写 JSONL manifest → 自动 scan 入库。
+    """
+    if req.kind != "cv":
+        raise HTTPException(status_code=400, detail=f"unsupported prep kind: {req.kind}")
+
+    job = DatasetPrepJob(
+        kind=req.kind,
+        source_dir=req.source_dir,
+        source_pull_id=req.source_pull_id,
+        lang=req.lang.strip(),
+        splits=json.dumps(req.splits),
+        status="queued",
+    )
+    db.add(job)
+    db.commit()
+    db.refresh(job)
+    return DatasetPrepOut.model_validate(job)
+
+
+@app.get("/api/dataset-prep-jobs", response_model=list[DatasetPrepOut], tags=["数据集"])
+def list_dataset_prep_jobs(
+    limit: int = Query(50, ge=1, le=200),
+    db: Session = Depends(get_db),
+):
+    rows = (
+        db.query(DatasetPrepJob)
+        .order_by(DatasetPrepJob.created_at.desc())
+        .limit(limit)
+        .all()
+    )
+    return [DatasetPrepOut.model_validate(r) for r in rows]
+
+
+@app.get("/api/dataset-prep-jobs/{job_id}", response_model=DatasetPrepOut, tags=["数据集"])
+def get_dataset_prep_job(job_id: int, db: Session = Depends(get_db)):
+    job = db.query(DatasetPrepJob).filter(DatasetPrepJob.id == job_id).first()
+    if not job:
+        raise HTTPException(status_code=404, detail=f"Prep job {job_id} not found")
+    return DatasetPrepOut.model_validate(job)
+
+
+@app.delete("/api/dataset-prep-jobs/{job_id}", response_model=MessageResponse, tags=["数据集"])
+def delete_dataset_prep_job(job_id: int, db: Session = Depends(get_db)):
+    job = db.query(DatasetPrepJob).filter(DatasetPrepJob.id == job_id).first()
+    if not job:
+        raise HTTPException(status_code=404, detail=f"Prep job {job_id} not found")
+    db.delete(job)
+    db.commit()
+    return MessageResponse(message=f"Prep job {job_id} deleted")
 
 
 # ──────────────────────────────────────

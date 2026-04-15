@@ -26,6 +26,19 @@ export const api = {
   deleteDatasetPull: (id) =>
     http.delete(`/dataset-pulls/${id}`).then(r => r.data),
 
+  // CV probe + prep
+  cvProbePull: (pullId) =>
+    http.get(`/dataset-pulls/${pullId}/cv-probe`).then(r => r.data),
+
+  listPrepJobs: () =>
+    http.get('/dataset-prep-jobs').then(r => r.data),
+
+  createPrepJob: (body) =>
+    http.post('/dataset-prep-jobs', body).then(r => r.data),
+
+  deletePrepJob: (id) =>
+    http.delete(`/dataset-prep-jobs/${id}`).then(r => r.data),
+
   // legacy 扫描接口（保留）
   listDatasetsLegacy: () =>
     http.get('/datasets/legacy').then(r => r.data),

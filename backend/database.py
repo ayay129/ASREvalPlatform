@@ -374,6 +374,41 @@ class DatasetPull(Base):
         return f"<DatasetPull(id={self.id}, repo_id='{self.repo_id}', status='{self.status}')>"
 
 
+class DatasetPrepJob(Base):
+    """
+    dataset_prep_jobs 表 — 数据集预处理任务
+
+    目前只支持 kind='cv'：把 Common Voice 风格的原始目录
+    （tar 音频 + TSV 转写）转成 JSONL manifest，便于训练/评测。
+    """
+    __tablename__ = "dataset_prep_jobs"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    kind = Column(String(20), nullable=False, default="cv")   # 预留扩展
+    source_dir = Column(Text, nullable=False)                  # 要处理的目录（一般是 pull 落盘处）
+    source_pull_id = Column(Integer, nullable=True, index=True) # 关联哪一次 HF pull（可选）
+    lang = Column(String(32), nullable=False)                  # 'mn' / 'bo' / ...
+    splits = Column(Text, nullable=False)                       # JSON list, e.g. '["train","test"]'
+
+    status = Column(String(20), default="queued", index=True)  # queued/running/completed/failed
+    error_message = Column(Text, nullable=True)
+    log_tail = Column(Text, nullable=True)
+
+    # 完成后回填
+    produced_manifests = Column(Text, nullable=True)            # JSON list[str]，绝对路径
+    registered_count = Column(Integer, default=0)
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+    started_at = Column(DateTime, nullable=True)
+    completed_at = Column(DateTime, nullable=True)
+
+    def __repr__(self):
+        return (
+            f"<DatasetPrepJob(id={self.id}, kind='{self.kind}', "
+            f"lang='{self.lang}', status='{self.status}')>"
+        )
+
+
 # ──────────────────────────────────────
 # 3. 工具函数
 # ──────────────────────────────────────

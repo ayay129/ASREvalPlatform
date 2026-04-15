@@ -2,6 +2,7 @@ import { Fragment, useCallback, useEffect, useState } from 'react'
 import {
   RefreshCw, Download, Copy, Eye, Trash2, X, Cloud, HardDrive,
   FileText, FileJson, AlertTriangle, ChevronDown, ChevronRight,
+  Wand2, Layers,
 } from 'lucide-react'
 import { api } from '../api'
 import { COLORS } from '../theme'
@@ -37,24 +38,29 @@ const fmtDate = (v) => (v ? new Date(v).toLocaleString() : '—')
 export default function Datasets() {
   const [datasets, setDatasets] = useState([])
   const [pulls, setPulls] = useState([])
+  const [prepJobs, setPrepJobs] = useState([])
   const [kindFilter, setKindFilter] = useState('')
   const [loading, setLoading] = useState(true)
   const [scanning, setScanning] = useState(false)
   const [toast, setToast] = useState('')
 
   const [pullOpen, setPullOpen] = useState(false)
+  const [prepTarget, setPrepTarget] = useState(null)   // {pull, probe} or null
   const [previewing, setPreviewing] = useState(null) // {ds, data}
   const [expandedPullId, setExpandedPullId] = useState(null)
+  const [expandedPrepId, setExpandedPrepId] = useState(null)
 
   const load = useCallback(async () => {
     setLoading(true)
     try {
-      const [ds, pl] = await Promise.all([
+      const [ds, pl, pj] = await Promise.all([
         api.listDatasets(kindFilter ? { kind: kindFilter } : {}),
         api.listDatasetPulls(),
+        api.listPrepJobs(),
       ])
       setDatasets(ds)
       setPulls(pl)
+      setPrepJobs(pj)
     } finally {
       setLoading(false)
     }
@@ -62,13 +68,15 @@ export default function Datasets() {
 
   useEffect(() => { load() }, [load])
 
-  // 如果有正在进行的 pull，每 3s 刷一次
+  // 如果有正在进行的 pull 或 prep，每 3s 刷一次
   useEffect(() => {
-    const active = pulls.some(p => p.status === 'queued' || p.status === 'running')
+    const active =
+      pulls.some(p => p.status === 'queued' || p.status === 'running') ||
+      prepJobs.some(j => j.status === 'queued' || j.status === 'running')
     if (!active) return
     const t = setInterval(load, 3000)
     return () => clearInterval(t)
-  }, [pulls, load])
+  }, [pulls, prepJobs, load])
 
   const runScan = async () => {
     setScanning(true)
@@ -108,6 +116,28 @@ export default function Datasets() {
     if (!confirm(msg)) return
     await api.deleteDatasetPull(pull.id)
     if (expandedPullId === pull.id) setExpandedPullId(null)
+    await load()
+  }
+
+  const openPrep = async (pull) => {
+    try {
+      const probe = await api.cvProbePull(pull.id)
+      if (!probe.is_cv || probe.languages.length === 0) {
+        setToast('Not a Common Voice layout (need audio/<lang>/ + transcript/<lang>/)')
+        setTimeout(() => setToast(''), 3500)
+        return
+      }
+      setPrepTarget({ pull, probe })
+    } catch (err) {
+      setToast(err.response?.data?.detail || 'Probe failed')
+      setTimeout(() => setToast(''), 3000)
+    }
+  }
+
+  const removePrep = async (job) => {
+    if (!confirm('Delete this prep job record? (produced manifests on disk are NOT deleted)')) return
+    await api.deletePrepJob(job.id)
+    if (expandedPrepId === job.id) setExpandedPrepId(null)
     await load()
   }
 
@@ -294,9 +324,16 @@ export default function Datasets() {
                       </td>
                       <td style={{ ...td, fontSize: 11, color: COLORS.textLight }}>{fmtDate(p.completed_at)}</td>
                       <td style={td} onClick={e => e.stopPropagation()}>
-                        <IconBtn title="Delete pull record" danger onClick={() => removePull(p)}>
-                          <Trash2 size={14} />
-                        </IconBtn>
+                        <div style={{ display: 'flex', gap: 6 }}>
+                          {p.status === 'completed' && (
+                            <IconBtn title="Prepare for training (Common Voice)" onClick={() => openPrep(p)}>
+                              <Wand2 size={14} />
+                            </IconBtn>
+                          )}
+                          <IconBtn title="Delete pull record" danger onClick={() => removePull(p)}>
+                            <Trash2 size={14} />
+                          </IconBtn>
+                        </div>
                       </td>
                     </tr>
                     {expanded && (
@@ -328,12 +365,119 @@ export default function Datasets() {
         </div>
       )}
 
+      {/* Prep jobs */}
+      {prepJobs.length > 0 && (
+        <div style={{ ...card, marginTop: 20 }}>
+          <h2 style={sectionTitle}>Prep jobs</h2>
+          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+            <thead>
+              <tr style={{ background: COLORS.secondary1 + '40' }}>
+                <th style={{ ...th, fontSize: 11, width: 30 }}></th>
+                {['Kind', 'Lang', 'Splits', 'Status', 'Manifests', 'Registered', 'Finished'].map(h => (
+                  <th key={h} style={{ ...th, fontSize: 11 }}>{h}</th>
+                ))}
+                <th style={{ ...th, fontSize: 11, width: 50 }}></th>
+              </tr>
+            </thead>
+            <tbody>
+              {prepJobs.slice(0, 10).map(j => {
+                const hasDetail = !!(j.error_message || j.log_tail || (j.produced_manifests && j.produced_manifests.length))
+                const isFailed = j.status === 'failed'
+                const expanded = expandedPrepId === j.id
+                return (
+                  <Fragment key={j.id}>
+                    <tr
+                      style={{
+                        borderTop: `1px solid ${COLORS.border}`,
+                        background: isFailed ? COLORS.danger + '08' : 'transparent',
+                        cursor: hasDetail ? 'pointer' : 'default',
+                      }}
+                      onClick={() => hasDetail && setExpandedPrepId(expanded ? null : j.id)}
+                    >
+                      <td style={{ ...td, color: COLORS.textLight }}>
+                        {hasDetail
+                          ? (expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />)
+                          : null}
+                      </td>
+                      <td style={td}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                          {isFailed && <AlertTriangle size={13} style={{ color: COLORS.danger }} />}
+                          <Layers size={13} style={{ color: COLORS.secondary2 }} />
+                          <span style={{ fontWeight: 600 }}>{j.kind}</span>
+                        </div>
+                      </td>
+                      <td style={td}><code>{j.lang}</code></td>
+                      <td style={td}>
+                        {(j.splits || []).map(s => (
+                          <span key={s} style={chipMini}>{s}</span>
+                        ))}
+                      </td>
+                      <td style={td}><StatusBadge status={j.status} /></td>
+                      <td style={td}>{(j.produced_manifests || []).length}</td>
+                      <td style={td}>{j.registered_count}</td>
+                      <td style={{ ...td, fontSize: 11, color: COLORS.textLight }}>{fmtDate(j.completed_at)}</td>
+                      <td style={td} onClick={e => e.stopPropagation()}>
+                        <IconBtn title="Delete prep job record" danger onClick={() => removePrep(j)}>
+                          <Trash2 size={14} />
+                        </IconBtn>
+                      </td>
+                    </tr>
+                    {expanded && (
+                      <tr style={{ background: isFailed ? COLORS.danger + '06' : COLORS.bg }}>
+                        <td />
+                        <td colSpan={8} style={{ padding: '10px 14px 16px' }}>
+                          {j.error_message && (
+                            <div style={pullErrorBox}>
+                              <div style={{ fontWeight: 600, marginBottom: 4 }}>Error</div>
+                              <div style={{ whiteSpace: 'pre-wrap' }}>{j.error_message}</div>
+                            </div>
+                          )}
+                          {j.produced_manifests && j.produced_manifests.length > 0 && (
+                            <div style={{ marginBottom: 10 }}>
+                              <div style={{ fontSize: 11, fontWeight: 600, color: COLORS.textMid, marginBottom: 4 }}>
+                                Produced manifests
+                              </div>
+                              {j.produced_manifests.map(m => (
+                                <div key={m} style={{ fontSize: 11, fontFamily: 'ui-monospace,Menlo,monospace', color: COLORS.textDark }}>
+                                  {m}
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                          {j.log_tail && (
+                            <div>
+                              <div style={{ fontSize: 11, fontWeight: 600, color: COLORS.textMid, marginBottom: 4 }}>
+                                Log tail
+                              </div>
+                              <pre style={pullLogPre}>{j.log_tail}</pre>
+                            </div>
+                          )}
+                        </td>
+                      </tr>
+                    )}
+                  </Fragment>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+
       {toast && <div style={toastStyle}>{toast}</div>}
 
       {pullOpen && (
         <PullModal
           onClose={() => setPullOpen(false)}
           onSubmitted={() => { setPullOpen(false); load() }}
+        />
+      )}
+
+      {prepTarget && (
+        <PrepModal
+          pull={prepTarget.pull}
+          probe={prepTarget.probe}
+          onClose={() => setPrepTarget(null)}
+          onSubmitted={() => { setPrepTarget(null); load() }}
         />
       )}
 
@@ -446,6 +590,129 @@ function PullModal({ onClose, onSubmitted }) {
             <button type="submit" disabled={submitting} style={btnAccent}>
               <Download size={14} />
               {submitting ? 'Enqueuing…' : 'Start pull'}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  )
+}
+
+function PrepModal({ pull, probe, onClose, onSubmitted }) {
+  const langs = probe.languages || []
+  const [lang, setLang] = useState(langs[0]?.lang || '')
+  const currentLang = langs.find(l => l.lang === lang) || langs[0]
+  const [selected, setSelected] = useState(() =>
+    new Set((currentLang?.splits || []).filter(s => s.name === 'train' || s.name === 'test').map(s => s.name))
+  )
+  const [submitting, setSubmitting] = useState(false)
+  const [error, setError] = useState('')
+
+  // lang 切换时，默认勾选 train/test
+  useEffect(() => {
+    const cur = langs.find(l => l.lang === lang)
+    if (!cur) return
+    setSelected(new Set(cur.splits.filter(s => s.name === 'train' || s.name === 'test').map(s => s.name)))
+  }, [lang])
+
+  const toggle = (name) => {
+    const next = new Set(selected)
+    if (next.has(name)) next.delete(name)
+    else next.add(name)
+    setSelected(next)
+  }
+
+  const submit = async (e) => {
+    e.preventDefault()
+    if (selected.size === 0) { setError('pick at least one split'); return }
+    setSubmitting(true)
+    setError('')
+    try {
+      await api.createPrepJob({
+        kind: 'cv',
+        source_dir: pull.local_dir,
+        source_pull_id: pull.id,
+        lang,
+        splits: Array.from(selected),
+      })
+      onSubmitted()
+    } catch (err) {
+      setError(err.response?.data?.detail || 'Failed to enqueue prep job')
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <div style={modalBackdrop} onClick={onClose}>
+      <div style={{ ...modalBody, width: 560 }} onClick={e => e.stopPropagation()}>
+        <div style={modalHeader}>
+          <h3 style={{ margin: 0, fontSize: 16, fontWeight: 700 }}>
+            Prepare for training · {pull.repo_id}
+          </h3>
+          <button style={closeBtn} onClick={onClose}><X size={16} /></button>
+        </div>
+        <form onSubmit={submit} style={{ padding: 24 }}>
+          <div style={{ fontSize: 12, color: COLORS.textLight, marginBottom: 16, lineHeight: 1.6 }}>
+            This will extract the <code>.tar</code> archives, join split TSVs with{' '}
+            <code>clip_durations.tsv</code>, and write a JSONL manifest per selected split.
+            The manifest will then be auto-registered as a <strong>train_manifest</strong>,
+            usable in New Train Run.
+          </div>
+
+          <div style={{ marginBottom: 16 }}>
+            <label style={labelStyle}>Language</label>
+            <div style={{ position: 'relative' }}>
+              <select
+                style={{ ...input, appearance: 'none', paddingRight: 36, cursor: 'pointer' }}
+                value={lang}
+                onChange={e => setLang(e.target.value)}
+              >
+                {langs.map(l => (
+                  <option key={l.lang} value={l.lang}>
+                    {l.lang} ({l.splits.length} splits
+                    {l.has_clip_durations ? '' : ', ⚠ no clip_durations.tsv'})
+                  </option>
+                ))}
+              </select>
+              <ChevronDown size={15} style={{ position: 'absolute', right: 12, top: '50%', transform: 'translateY(-50%)', color: COLORS.textLight, pointerEvents: 'none' }} />
+            </div>
+            {currentLang && !currentLang.has_clip_durations && (
+              <div style={{ fontSize: 11, color: COLORS.danger, marginTop: 4 }}>
+                This language has no <code>clip_durations.tsv</code>. Rows without duration
+                will be skipped.
+              </div>
+            )}
+          </div>
+
+          <div style={{ marginBottom: 16 }}>
+            <label style={labelStyle}>Splits</label>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {(currentLang?.splits || []).map(s => (
+                <label key={s.name} style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 13, cursor: 'pointer' }}>
+                  <input
+                    type="checkbox"
+                    checked={selected.has(s.name)}
+                    onChange={() => toggle(s.name)}
+                  />
+                  <span style={{ fontWeight: 600, color: COLORS.textDark, minWidth: 90 }}>{s.name}</span>
+                  <span style={{ fontSize: 11, color: COLORS.textLight }}>
+                    {s.rows != null ? `${s.rows.toLocaleString()} rows` : '?'}
+                    {' · '}{s.tar_count} tar{s.tar_count !== 1 ? 's' : ''}
+                    {s.tar_count === 0 && ' ⚠'}
+                  </span>
+                </label>
+              ))}
+            </div>
+          </div>
+
+          {error && <div style={errorBox}>{error}</div>}
+
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, marginTop: 20 }}>
+            <button type="button" style={btnGhost} onClick={onClose}>Cancel</button>
+            <button type="submit" disabled={submitting} style={btnAccent}>
+              <Wand2 size={14} />
+              {submitting ? 'Enqueuing…' : 'Start prep'}
             </button>
           </div>
         </form>
@@ -635,6 +902,14 @@ const pullErrorBox = {
   color: COLORS.danger,
   fontSize: 12, marginBottom: 10,
   fontFamily: 'ui-monospace,Menlo,monospace',
+}
+
+const chipMini = {
+  display: 'inline-block',
+  padding: '2px 7px', marginRight: 4, borderRadius: 10,
+  fontSize: 10, fontWeight: 600,
+  background: COLORS.secondary1 + '90',
+  color: COLORS.secondary2,
 }
 
 const pullLogPre = {

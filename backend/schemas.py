@@ -21,7 +21,9 @@ schemas.py — API 数据校验模型 (Pydantic)
 from datetime import datetime
 from typing import Optional, List
 
-from pydantic import BaseModel, Field
+import json
+
+from pydantic import BaseModel, Field, field_validator
 
 
 # ──────────────────────────────────────
@@ -260,6 +262,74 @@ class DatasetPullOut(BaseModel):
     completed_at: Optional[datetime] = None
 
     model_config = {"from_attributes": True}
+
+
+# ── 数据集预处理（当前只有 Common Voice prep） ──
+
+class CVSplitInfo(BaseModel):
+    name: str
+    tsv_path: str
+    tar_count: int = 0
+    rows: Optional[int] = None
+
+
+class CVLanguageInfo(BaseModel):
+    lang: str
+    transcript_dir: str
+    audio_dir: str
+    has_clip_durations: bool = False
+    splits: List[CVSplitInfo] = []
+
+
+class CVProbeResponse(BaseModel):
+    base_dir: str
+    is_cv: bool
+    languages: List[CVLanguageInfo] = []
+
+
+class DatasetPrepCreate(BaseModel):
+    kind: str = Field("cv", description="目前只支持 'cv'")
+    source_dir: str = Field(..., min_length=1, description="原料目录（一般来自 HF pull）")
+    source_pull_id: Optional[int] = None
+    lang: str = Field(..., min_length=1, description="语言代码，如 'mn'")
+    splits: List[str] = Field(
+        ...,
+        min_length=1,
+        description="要处理的 splits，如 ['train','test']",
+    )
+
+
+class DatasetPrepOut(BaseModel):
+    id: int
+    kind: str
+    source_dir: str
+    source_pull_id: Optional[int] = None
+    lang: str
+    splits: List[str] = []
+    status: str
+    error_message: Optional[str] = None
+    log_tail: Optional[str] = None
+    produced_manifests: List[str] = []
+    registered_count: int = 0
+    created_at: datetime
+    started_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+
+    model_config = {"from_attributes": True}
+
+    # DB 里 splits / produced_manifests 存的是 JSON 字符串，这里自动解码
+    @field_validator("splits", "produced_manifests", mode="before")
+    @classmethod
+    def _decode_json_list(cls, v):
+        if v is None or v == "":
+            return []
+        if isinstance(v, str):
+            try:
+                parsed = json.loads(v)
+            except json.JSONDecodeError:
+                return []
+            return parsed if isinstance(parsed, list) else []
+        return v
 
 
 # ──────────────────────────────────────

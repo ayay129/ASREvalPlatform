@@ -31,9 +31,12 @@ from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
 
-from database import SessionLocal, TrainRun, DatasetPull, init_db
+import json as _json
+
+from database import SessionLocal, TrainRun, DatasetPull, DatasetPrepJob, init_db
 from dataset_loader import DATASET_BASE_DIR
 from dataset_registry import scan_and_upsert
+from dataset_prep import prepare_cv_split, PrepError
 
 
 # ──────────────────────────────────────
@@ -633,6 +636,167 @@ def process_one_dataset_pull() -> bool:
 
 
 # ──────────────────────────────────────
+# DatasetPrepJob（Common Voice 等预处理）消费
+# ──────────────────────────────────────
+
+def _claim_next_prep_job() -> Optional[int]:
+    db = SessionLocal()
+    try:
+        job = (
+            db.query(DatasetPrepJob)
+            .filter(DatasetPrepJob.status == "queued")
+            .order_by(DatasetPrepJob.created_at.asc())
+            .first()
+        )
+        if not job:
+            return None
+        job.status = "running"
+        job.started_at = datetime.utcnow()
+        job.error_message = None
+        db.commit()
+        db.refresh(job)
+        print(f"[WORKER] Claimed prep job #{job.id}: {job.kind} lang={job.lang}")
+        return job.id
+    finally:
+        db.close()
+
+
+def _finish_prep_job(
+    job_id: int,
+    *,
+    status: str,
+    error: Optional[str] = None,
+    log_tail: Optional[str] = None,
+    produced_manifests: Optional[List[str]] = None,
+    registered_count: int = 0,
+) -> None:
+    db = SessionLocal()
+    try:
+        job = db.query(DatasetPrepJob).filter(DatasetPrepJob.id == job_id).first()
+        if not job:
+            return
+        job.status = status
+        job.completed_at = datetime.utcnow()
+        if error is not None:
+            job.error_message = error[:2000]
+        if log_tail is not None:
+            job.log_tail = log_tail[-4000:]
+        if produced_manifests is not None:
+            job.produced_manifests = _json.dumps(produced_manifests)
+        job.registered_count = registered_count
+        db.commit()
+    finally:
+        db.close()
+
+
+def _run_cv_prep(job_id: int) -> None:
+    db = SessionLocal()
+    try:
+        job = db.query(DatasetPrepJob).filter(DatasetPrepJob.id == job_id).first()
+        if not job:
+            return
+        source_dir = job.source_dir
+        lang = job.lang
+        try:
+            splits = _json.loads(job.splits or "[]")
+        except _json.JSONDecodeError:
+            splits = []
+    finally:
+        db.close()
+
+    if not splits:
+        _finish_prep_job(job_id, status="failed", error="no splits selected")
+        return
+
+    log_lines: List[str] = [
+        f"[{datetime.utcnow().isoformat()}Z] cv prep start",
+        f"source_dir = {source_dir}",
+        f"lang       = {lang}",
+        f"splits     = {splits}",
+    ]
+    print(f"[WORKER] CV prep #{job_id} lang={lang} splits={splits}")
+
+    produced: List[str] = []
+    total_written = 0
+    try:
+        for split in splits:
+            result = prepare_cv_split(source_dir, lang, split, log=log_lines)
+            produced.append(result.manifest_path)
+            total_written += result.written
+            print(
+                f"[WORKER] CV prep #{job_id} {lang}/{split} → "
+                f"{result.written} lines ({result.missing_audio} no-audio, "
+                f"{result.missing_duration} no-duration)"
+            )
+    except PrepError as exc:
+        log_lines.append(f"PrepError: {exc}")
+        print(f"[WORKER] CV prep #{job_id} FAILED: {exc}")
+        _finish_prep_job(
+            job_id,
+            status="failed",
+            error=str(exc),
+            log_tail="\n".join(log_lines),
+            produced_manifests=produced,
+        )
+        return
+    except Exception as exc:
+        log_lines.append(f"Unexpected: {exc}")
+        print(f"[WORKER] CV prep #{job_id} FAILED (unexpected): {exc}")
+        _finish_prep_job(
+            job_id,
+            status="failed",
+            error=f"unexpected: {exc}",
+            log_tail="\n".join(log_lines),
+            produced_manifests=produced,
+        )
+        return
+
+    # 触发 scan，把新写的 manifest 登记进 datasets 表
+    registered = 0
+    db = SessionLocal()
+    try:
+        scanned, added, updated, _removed = scan_and_upsert(
+            db,
+            base_dir=source_dir,
+            source="huggingface",
+            # source_repo 保留 — scan 不会覆盖已有的 source_repo
+        )
+        registered = added + updated
+        log_lines.append(
+            f"scan: scanned={scanned}, added={added}, updated={updated}"
+        )
+    except Exception as exc:
+        log_lines.append(f"scan FAILED: {exc}")
+        print(f"[WORKER] CV prep #{job_id} scan FAILED: {exc}")
+    finally:
+        db.close()
+
+    _finish_prep_job(
+        job_id,
+        status="completed",
+        log_tail="\n".join(log_lines),
+        produced_manifests=produced,
+        registered_count=registered,
+    )
+    print(
+        f"[WORKER] CV prep #{job_id} done: {total_written} lines, "
+        f"{len(produced)} manifests, {registered} registered"
+    )
+
+
+def process_one_prep_job() -> bool:
+    job_id = _claim_next_prep_job()
+    if job_id is None:
+        return False
+    try:
+        _run_cv_prep(job_id)
+    except Exception as exc:
+        print(f"[WORKER] CV prep #{job_id} FAILED (outer): {exc}")
+        _finish_prep_job(job_id, status="failed", error=f"unexpected: {exc}")
+    return True
+
+
+# ──────────────────────────────────────
 # TrainRun 消费
 # ──────────────────────────────────────
 
@@ -730,6 +894,18 @@ def _recover_orphaned_tasks() -> None:
                 print(f"[WORKER] Recovered orphaned dataset pull #{p.id} ({p.repo_id}) → failed")
             # queued 的保持 queued，worker 直接重新消费就行
 
+        # DatasetPrepJob 孤儿
+        stale_prep = (
+            db.query(DatasetPrepJob)
+            .filter(DatasetPrepJob.status == "running")
+            .all()
+        )
+        for j in stale_prep:
+            j.status = "failed"
+            j.completed_at = datetime.utcnow()
+            j.error_message = "worker restarted while prep was running (orphaned)"
+            print(f"[WORKER] Recovered orphaned prep job #{j.id} ({j.lang}) → failed")
+
         # TrainRun 孤儿
         stale_runs = (
             db.query(TrainRun)
@@ -746,7 +922,7 @@ def _recover_orphaned_tasks() -> None:
             r.phase = None
             print(f"[WORKER] Recovered orphaned train run #{r.id} ({r.name}) → failed")
 
-        if stale_pulls or stale_runs:
+        if stale_pulls or stale_prep or stale_runs:
             db.commit()
     finally:
         db.close()
@@ -769,8 +945,10 @@ def main() -> None:
 
     while True:
         try:
-            # 先处理轻量的数据集拉取（不占 GPU），再轮训练任务
+            # 先处理轻量的数据集拉取和预处理（不占 GPU），再轮训练任务
             handled = process_one_dataset_pull()
+            if not handled:
+                handled = process_one_prep_job()
             if not handled:
                 handled = process_one_train_run()
         except KeyboardInterrupt:
