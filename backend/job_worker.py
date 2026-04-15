@@ -514,8 +514,16 @@ def _run_huggingface_pull(pull_id: int) -> None:
             return
         repo_id = pull.repo_id
         revision = pull.revision
+        allow_raw = pull.allow_patterns
     finally:
         db.close()
+
+    # 解析 allow_patterns: 逗号分隔的 glob 串 → list[str] or None
+    allow_patterns: Optional[List[str]] = None
+    if allow_raw:
+        parts = [p.strip() for p in allow_raw.split(",") if p.strip()]
+        if parts:
+            allow_patterns = parts
 
     try:
         from huggingface_hub import snapshot_download
@@ -527,13 +535,17 @@ def _run_huggingface_pull(pull_id: int) -> None:
 
     target_dir = Path(DATASET_BASE_DIR) / _repo_slug(repo_id)
     target_dir.mkdir(parents=True, exist_ok=True)
-    print(f"[WORKER] HF pull → {target_dir}  (repo={repo_id}, rev={revision})")
+    print(
+        f"[WORKER] HF pull → {target_dir}  "
+        f"(repo={repo_id}, rev={revision}, allow_patterns={allow_patterns})"
+    )
 
     log_lines: list[str] = [
         f"[{datetime.utcnow().isoformat()}Z] snapshot_download start",
-        f"repo_id    = {repo_id}",
-        f"revision   = {revision or 'main'}",
-        f"local_dir  = {target_dir}",
+        f"repo_id        = {repo_id}",
+        f"revision       = {revision or 'main'}",
+        f"local_dir      = {target_dir}",
+        f"allow_patterns = {allow_patterns if allow_patterns else '(none → full repo)'}",
     ]
 
     try:
@@ -543,6 +555,7 @@ def _run_huggingface_pull(pull_id: int) -> None:
             revision=revision,
             local_dir=str(target_dir),
             local_dir_use_symlinks=False,
+            allow_patterns=allow_patterns,
         )
         log_lines.append("snapshot_download done")
         print(f"[WORKER] HF pull #{pull_id} snapshot_download done → {target_dir}")

@@ -238,12 +238,18 @@ class DatasetPullCreate(BaseModel):
         examples=["asr-community/tibetan-common-voice"],
     )
     revision: Optional[str] = Field(None, description="分支/tag/commit，默认 main")
+    allow_patterns: Optional[str] = Field(
+        None,
+        description="逗号分隔的 glob 模式，留空=全量。例: transcript/mn/**,audio/mn/**",
+        examples=["transcript/mn/**,audio/mn/**"],
+    )
 
 
 class DatasetPullOut(BaseModel):
     id: int
     repo_id: str
     revision: Optional[str] = None
+    allow_patterns: Optional[str] = None
     local_dir: Optional[str] = None
     status: str
     error_message: Optional[str] = None

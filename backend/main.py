@@ -165,6 +165,7 @@ def create_dataset_pull(req: DatasetPullCreate, db: Session = Depends(get_db)):
     pull = DatasetPull(
         repo_id=req.repo_id.strip(),
         revision=(req.revision or None),
+        allow_patterns=(req.allow_patterns.strip() if req.allow_patterns else None),
         status="queued",
     )
     db.add(pull)

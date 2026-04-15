@@ -356,6 +356,7 @@ function IconBtn({ children, onClick, title, danger }) {
 function PullModal({ onClose, onSubmitted }) {
   const [repoId, setRepoId] = useState('')
   const [revision, setRevision] = useState('')
+  const [allowPatterns, setAllowPatterns] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState('')
 
@@ -368,6 +369,7 @@ function PullModal({ onClose, onSubmitted }) {
       await api.createDatasetPull({
         repo_id: repoId.trim(),
         revision: revision.trim() || undefined,
+        allow_patterns: allowPatterns.trim() || undefined,
       })
       onSubmitted()
     } catch (err) {
@@ -404,8 +406,21 @@ function PullModal({ onClose, onSubmitted }) {
               onChange={e => setRevision(e.target.value)}
             />
           </div>
+          <div style={{ marginBottom: 16 }}>
+            <label style={labelStyle}>Subset / allow patterns (optional)</label>
+            <input
+              style={input}
+              placeholder="transcript/mn/**,audio/mn/**"
+              value={allowPatterns}
+              onChange={e => setAllowPatterns(e.target.value)}
+            />
+            <div style={{ fontSize: 11, color: COLORS.textLight, marginTop: 4, lineHeight: 1.5 }}>
+              Comma-separated globs. Leave empty to pull the whole repo.<br />
+              For Common Voice Mongolian try <code>transcript/mn/**,audio/mn/**</code>
+            </div>
+          </div>
           <div style={{ fontSize: 12, color: COLORS.textLight, marginBottom: 16 }}>
-            Downloads the whole repo via <code>snapshot_download</code> into the server's
+            Downloads via <code>snapshot_download</code> into the server's
             dataset directory, then scans and registers any CSV / JSONL files found.
           </div>
           {error && <div style={errorBox}>{error}</div>}
