@@ -701,6 +701,57 @@ def process_one_train_run() -> bool:
     return True
 
 
+def _recover_orphaned_tasks() -> None:
+    """
+    Worker 启动时调用一次。
+
+    单 worker 部署下，任何处于 running 的任务一定是上次被 kill 时留下的孤儿，
+    这里把它们统一标成 failed，防止前端一直显示"running"。
+
+    注意：这假设同一时间只有一个 worker 实例在跑。如果将来部署多 worker，
+    需要改成基于 heartbeat_at 的 stale 检测。
+    """
+    db = SessionLocal()
+    try:
+        # DatasetPull 孤儿
+        stale_pulls = (
+            db.query(DatasetPull)
+            .filter(DatasetPull.status.in_(["running", "queued"]))
+            .all()
+        )
+        for p in stale_pulls:
+            if p.status == "running":
+                p.status = "failed"
+                p.completed_at = datetime.utcnow()
+                p.error_message = (
+                    "worker restarted while task was running (orphaned); "
+                    "recreate the pull if you still want it"
+                )
+                print(f"[WORKER] Recovered orphaned dataset pull #{p.id} ({p.repo_id}) → failed")
+            # queued 的保持 queued，worker 直接重新消费就行
+
+        # TrainRun 孤儿
+        stale_runs = (
+            db.query(TrainRun)
+            .filter(TrainRun.status == "running")
+            .all()
+        )
+        for r in stale_runs:
+            r.status = "failed"
+            r.completed_at = datetime.utcnow()
+            r.error_message = (
+                "worker restarted while training was running (orphaned); "
+                "resume_from_checkpoint may be needed to continue"
+            )
+            r.phase = None
+            print(f"[WORKER] Recovered orphaned train run #{r.id} ({r.name}) → failed")
+
+        if stale_pulls or stale_runs:
+            db.commit()
+    finally:
+        db.close()
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="ASR Eval training worker")
     parser.add_argument("--poll-interval", type=float, default=3.0, help="轮询间隔（秒）")
@@ -708,6 +759,7 @@ def main() -> None:
     args = parser.parse_args()
 
     init_db()
+    _recover_orphaned_tasks()
 
     print(
         f"[WORKER] Started. poll_interval={args.poll_interval:.1f}s, once={args.once}"

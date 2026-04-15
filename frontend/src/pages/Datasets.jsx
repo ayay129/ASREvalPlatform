@@ -100,6 +100,17 @@ export default function Datasets() {
     await load()
   }
 
+  const removePull = async (pull) => {
+    const active = pull.status === 'queued' || pull.status === 'running'
+    const msg = active
+      ? `Delete this ${pull.status} pull? (this only removes the DB record — if a worker is actually running, kill it separately)`
+      : 'Delete this pull record?'
+    if (!confirm(msg)) return
+    await api.deleteDatasetPull(pull.id)
+    if (expandedPullId === pull.id) setExpandedPullId(null)
+    await load()
+  }
+
   const openPreview = async (ds) => {
     setPreviewing({ ds, data: null, loading: true })
     try {
@@ -246,6 +257,7 @@ export default function Datasets() {
                 {['Repo', 'Revision', 'Status', 'Registered', 'Local dir', 'Finished'].map(h => (
                   <th key={h} style={{ ...th, fontSize: 11 }}>{h}</th>
                 ))}
+                <th style={{ ...th, fontSize: 11, width: 50 }}></th>
               </tr>
             </thead>
             <tbody>
@@ -281,11 +293,16 @@ export default function Datasets() {
                         {p.local_dir || '—'}
                       </td>
                       <td style={{ ...td, fontSize: 11, color: COLORS.textLight }}>{fmtDate(p.completed_at)}</td>
+                      <td style={td} onClick={e => e.stopPropagation()}>
+                        <IconBtn title="Delete pull record" danger onClick={() => removePull(p)}>
+                          <Trash2 size={14} />
+                        </IconBtn>
+                      </td>
                     </tr>
                     {expanded && (
                       <tr style={{ background: isFailed ? COLORS.danger + '06' : COLORS.bg }}>
                         <td />
-                        <td colSpan={6} style={{ padding: '10px 14px 16px' }}>
+                        <td colSpan={7} style={{ padding: '10px 14px 16px' }}>
                           {p.error_message && (
                             <div style={pullErrorBox}>
                               <div style={{ fontWeight: 600, marginBottom: 4 }}>Error</div>

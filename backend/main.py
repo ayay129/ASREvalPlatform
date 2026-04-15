@@ -197,6 +197,23 @@ def get_dataset_pull(pull_id: int, db: Session = Depends(get_db)):
     return DatasetPullOut.model_validate(pull)
 
 
+@app.delete("/api/dataset-pulls/{pull_id}", response_model=MessageResponse, tags=["数据集"])
+def delete_dataset_pull(pull_id: int, db: Session = Depends(get_db)):
+    """
+    删除一条 pull 任务记录。
+    - queued / running 的记录会被直接丢弃（不会真的去杀 worker 进程 —
+      实际 worker 重启时 _recover_orphaned_pulls() 会兜底修正状态）
+    - completed / failed 的记录就是纯清理
+    不会删除已经下到磁盘上的文件。
+    """
+    pull = db.query(DatasetPull).filter(DatasetPull.id == pull_id).first()
+    if not pull:
+        raise HTTPException(status_code=404, detail=f"Pull job {pull_id} not found")
+    db.delete(pull)
+    db.commit()
+    return MessageResponse(message=f"Pull job {pull_id} deleted")
+
+
 # ──────────────────────────────────────
 # 3. 训练 API
 # ──────────────────────────────────────
