@@ -183,6 +183,87 @@ def get_train_run(run_id: int, db: Session = Depends(get_db)):
     return TrainRunDetail.model_validate(train_run)
 
 
+@app.get("/api/train-runs/{run_id}/log", tags=["训练"])
+def get_train_run_log(
+    run_id: int,
+    tail: int = Query(500, ge=1, le=20000, description="返回最后 N 行日志"),
+    db: Session = Depends(get_db),
+):
+    """
+    读取训练日志文件的最后 N 行。
+
+    worker 把 finetune.py / merge_lora.py 的 stdout/stderr
+    都写到 {DATA_DIR}/train_logs/train_run_{id}.log。
+    前端轮询这个接口来展示"实时日志"。
+    """
+    train_run = db.query(TrainRun).filter(TrainRun.id == run_id).first()
+    if not train_run:
+        raise HTTPException(status_code=404, detail=f"训练任务 {run_id} 不存在")
+    if not train_run.log_path or not os.path.exists(train_run.log_path):
+        return {"lines": [], "total_lines": 0, "path": train_run.log_path}
+
+    # 简单实现：读全文再切尾。训练日志通常不会超过几十 MB，先这么做，
+    # 如果后面真的很大，再换成 seek 从文件尾倒着读的方式。
+    with open(train_run.log_path, "r", encoding="utf-8", errors="replace") as fh:
+        all_lines = fh.readlines()
+
+    sliced = all_lines[-tail:]
+    return {
+        "lines": [line.rstrip("\n") for line in sliced],
+        "total_lines": len(all_lines),
+        "path": train_run.log_path,
+    }
+
+
+@app.get("/api/train-runs/{run_id}/metrics", tags=["训练"])
+def get_train_run_metrics(run_id: int, db: Session = Depends(get_db)):
+    """
+    从日志里抽训练过程中的 loss / eval_loss 序列，供前端画曲线。
+
+    Trainer 默认每 logging_steps 会打印一行形如：
+        {'loss': 1.23, 'learning_rate': 0.0009, 'epoch': 0.05}
+    评估时还会打印：
+        {'eval_loss': 0.98, 'eval_runtime': ..., 'epoch': 0.2}
+    这里用两个正则把它们抽出来。
+    """
+    import re
+
+    train_run = db.query(TrainRun).filter(TrainRun.id == run_id).first()
+    if not train_run:
+        raise HTTPException(status_code=404, detail=f"训练任务 {run_id} 不存在")
+    if not train_run.log_path or not os.path.exists(train_run.log_path):
+        return {"train": [], "eval": []}
+
+    loss_re = re.compile(r"'loss':\s*([0-9.eE+-]+)")
+    eval_loss_re = re.compile(r"'eval_loss':\s*([0-9.eE+-]+)")
+    epoch_re = re.compile(r"'epoch':\s*([0-9.eE+-]+)")
+
+    train_points = []
+    eval_points = []
+
+    with open(train_run.log_path, "r", encoding="utf-8", errors="replace") as fh:
+        for line in fh:
+            epoch_m = epoch_re.search(line)
+            epoch = float(epoch_m.group(1)) if epoch_m else None
+
+            ev = eval_loss_re.search(line)
+            if ev:
+                try:
+                    eval_points.append({"epoch": epoch, "eval_loss": float(ev.group(1))})
+                except ValueError:
+                    pass
+                continue  # eval 行不再当成 train loss
+
+            m = loss_re.search(line)
+            if m:
+                try:
+                    train_points.append({"epoch": epoch, "loss": float(m.group(1))})
+                except ValueError:
+                    pass
+
+    return {"train": train_points, "eval": eval_points}
+
+
 # ──────────────────────────────────────
 # 4. 评测 API
 # ──────────────────────────────────────

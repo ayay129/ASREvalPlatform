@@ -23,7 +23,7 @@ from datetime import datetime
 
 from sqlalchemy import (
     Column, Integer, Float, String, Text, DateTime,
-    Boolean, ForeignKey, create_engine
+    Boolean, ForeignKey, create_engine, inspect, text
 )
 from sqlalchemy.orm import declarative_base, relationship, sessionmaker
 
@@ -268,6 +268,23 @@ class TrainRun(Base):
     status = Column(String(20), default="queued", index=True)
     error_message = Column(Text, nullable=True)
 
+    # ── 进度追踪 ──
+    # worker 在运行 finetune.py 时会实时解析 stdout 并把以下字段回写，
+    # 供前端轮询或后续 SSE 展示训练进度、损失曲线
+    current_step = Column(Integer, default=0)
+    total_steps = Column(Integer, default=0)
+    current_epoch = Column(Float, default=0.0)
+    current_loss = Column(Float, nullable=True)
+    current_eval_loss = Column(Float, nullable=True)
+    log_path = Column(Text, nullable=True)
+    # LoRA adapter 的输出路径（finetune.py 产物）
+    checkpoint_path = Column(Text, nullable=True)
+    # merge_lora.py 合并后的完整模型路径，后续推理/评测用这个
+    merged_model_path = Column(Text, nullable=True)
+    # 当前阶段：finetune / merging / done
+    phase = Column(String(20), nullable=True)
+    pid = Column(Integer, nullable=True)
+
     # ── 时间戳 ──
     created_at = Column(DateTime, default=datetime.utcnow)
     started_at = Column(DateTime, nullable=True)
@@ -284,12 +301,51 @@ class TrainRun(Base):
 # 3. 工具函数
 # ──────────────────────────────────────
 
+def _migrate_train_runs():
+    """
+    手动给 train_runs 表做兼容性迁移。
+
+    SQLite 的 `create_all` 只创建新表，不会给已有表加列。
+    这里读一次表结构，把 ORM 里新增的列逐一 ALTER 出来，
+    避免老数据库升级后出现 `no such column` 错误。
+
+    只处理 ADD COLUMN，不做复杂的类型迁移/重命名。
+    """
+    expected_columns = {
+        "current_step": "INTEGER DEFAULT 0",
+        "total_steps": "INTEGER DEFAULT 0",
+        "current_epoch": "FLOAT DEFAULT 0.0",
+        "current_loss": "FLOAT",
+        "current_eval_loss": "FLOAT",
+        "log_path": "TEXT",
+        "checkpoint_path": "TEXT",
+        "merged_model_path": "TEXT",
+        "phase": "VARCHAR(20)",
+        "pid": "INTEGER",
+    }
+
+    inspector = inspect(engine)
+    if "train_runs" not in inspector.get_table_names():
+        return
+
+    existing = {col["name"] for col in inspector.get_columns("train_runs")}
+    missing = [(name, ddl) for name, ddl in expected_columns.items() if name not in existing]
+    if not missing:
+        return
+
+    with engine.begin() as conn:
+        for name, ddl in missing:
+            conn.execute(text(f"ALTER TABLE train_runs ADD COLUMN {name} {ddl}"))
+            print(f"[DB] Added column train_runs.{name}")
+
+
 def init_db():
     """
-    初始化数据库：创建所有表（如果不存在）。
+    初始化数据库：创建所有表（如果不存在），并给老表补齐新列。
     在 FastAPI 启动时调用一次即可。
     """
     Base.metadata.create_all(bind=engine)
+    _migrate_train_runs()
 
 
 def get_db():

@@ -17,6 +17,12 @@ export const api = {
   getTrainRun: (id) =>
     http.get(`/train-runs/${id}`).then(r => r.data),
 
+  getTrainRunLog: (id, tail = 500) =>
+    http.get(`/train-runs/${id}/log`, { params: { tail } }).then(r => r.data),
+
+  getTrainRunMetrics: (id) =>
+    http.get(`/train-runs/${id}/metrics`).then(r => r.data),
+
   // Evaluations
   listEvals: (params = {}) =>
     http.get('/evaluations', { params }).then(r => r.data),

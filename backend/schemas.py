@@ -275,6 +275,11 @@ class TrainRunSummary(BaseModel):
     train_data_path: str
     test_data_path: str
     status: str
+    current_step: int = 0
+    total_steps: int = 0
+    current_epoch: float = 0.0
+    current_loss: Optional[float] = None
+    phase: Optional[str] = None
     created_at: datetime
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
@@ -314,6 +319,19 @@ class TrainRunDetail(BaseModel):
     hub_model_id: Optional[str] = None
     status: str
     error_message: Optional[str] = None
+
+    # 进度追踪（worker 实时回写）
+    current_step: int = 0
+    total_steps: int = 0
+    current_epoch: float = 0.0
+    current_loss: Optional[float] = None
+    current_eval_loss: Optional[float] = None
+    log_path: Optional[str] = None
+    checkpoint_path: Optional[str] = None
+    merged_model_path: Optional[str] = None
+    phase: Optional[str] = None
+    pid: Optional[int] = None
+
     created_at: datetime
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None

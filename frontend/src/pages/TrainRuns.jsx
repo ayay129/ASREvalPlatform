@@ -108,13 +108,26 @@ export default function TrainRuns() {
                 <td colSpan={7} style={emptyCell}>No training runs yet</td>
               </tr>
             ) : runs.map((run, index) => (
-              <tr key={run.id} style={{ borderTop: `1px solid ${COLORS.border}`, background: index % 2 === 0 ? '#fff' : COLORS.bg }}>
+              <tr
+                key={run.id}
+                onClick={() => navigate(`/train-runs/${run.id}`)}
+                style={{
+                  borderTop: `1px solid ${COLORS.border}`,
+                  background: index % 2 === 0 ? '#fff' : COLORS.bg,
+                  cursor: 'pointer',
+                }}
+              >
                 <td style={{ ...td, color: COLORS.textLight, fontSize: 12 }}>#{run.id}</td>
                 <td style={{ ...td, fontWeight: 700, color: COLORS.textDark }}>{run.name}</td>
                 <td style={td}>{run.base_model}</td>
                 <td style={pathCell}>{run.train_data_path}</td>
                 <td style={pathCell}>{run.test_data_path}</td>
-                <td style={td}><StatusBadge status={run.status} /></td>
+                <td style={td}>
+                  <StatusBadge status={run.status} />
+                  {run.phase && run.status === 'running' && (
+                    <span style={phaseBadge}>{run.phase}</span>
+                  )}
+                </td>
                 <td style={{ ...td, color: COLORS.textLight, fontSize: 12 }}>{fmtDate(run.created_at)}</td>
               </tr>
             ))}
@@ -154,6 +167,16 @@ const emptyCell = {
   textAlign: 'center',
   padding: 48,
   color: COLORS.textLight,
+}
+
+const phaseBadge = {
+  marginLeft: 6,
+  padding: '2px 8px',
+  borderRadius: 10,
+  fontSize: 11,
+  fontWeight: 600,
+  background: COLORS.secondary1 + '80',
+  color: COLORS.secondary2,
 }
 
 const errorBox = {
