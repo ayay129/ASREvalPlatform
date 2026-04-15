@@ -33,16 +33,19 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
-from database import init_db, get_db, Evaluation, EvaluationDetail, TrainRun
+from database import init_db, get_db, Evaluation, EvaluationDetail, TrainRun, Dataset, DatasetPull
 from schemas import (
     EvalCreate, EvalSummary, EvalFullResponse, EvalDetailItem,
     EditOpsBreakdown, WerDistribution,
     DatasetListResponse,
+    DatasetOut, DatasetPreview, ScanResponse,
+    DatasetPullCreate, DatasetPullOut,
     TrainRunCreate, TrainRunSummary, TrainRunDetail,
     CompareRequest, CompareResponse, CompareItem,
     MessageResponse,
 )
 from dataset_loader import scan_datasets, load_dataset, DATASET_BASE_DIR
+from dataset_registry import scan_and_upsert, preview_dataset
 
 
 # ──────────────────────────────────────
@@ -82,19 +85,115 @@ def on_startup():
 # 2. 数据集 API
 # ──────────────────────────────────────
 
-@app.get("/api/datasets", response_model=DatasetListResponse, tags=["数据集"])
-def list_datasets():
+@app.get("/api/datasets/legacy", response_model=DatasetListResponse, tags=["数据集"])
+def list_datasets_legacy():
     """
-    获取可用数据集列表。
-    
-    扫描 GPU 服务器上的数据集目录，返回所有可识别的数据集。
-    前端用这个接口填充"选择数据集"下拉列表。
+    老版"扫一下磁盘立即返回"接口，不走注册表。
+
+    保留是为了兼容早期前端，新代码请用 `/api/datasets`。
     """
     datasets = scan_datasets()
     return DatasetListResponse(
         datasets=datasets,
         base_dir=DATASET_BASE_DIR,
     )
+
+
+# ── 注册表 API ──
+
+@app.get("/api/datasets", response_model=list[DatasetOut], tags=["数据集"])
+def list_registered_datasets(
+    kind: Optional[str] = Query(None, description="按 kind 过滤: eval_csv / train_manifest"),
+    source: Optional[str] = Query(None, description="按来源过滤: local / huggingface"),
+    db: Session = Depends(get_db),
+):
+    """从注册表返回数据集列表。"""
+    query = db.query(Dataset)
+    if kind:
+        query = query.filter(Dataset.kind == kind)
+    if source:
+        query = query.filter(Dataset.source == source)
+    rows = query.order_by(Dataset.updated_at.desc()).all()
+    return [DatasetOut.model_validate(r) for r in rows]
+
+
+@app.post("/api/datasets/scan", response_model=ScanResponse, tags=["数据集"])
+def scan_datasets_endpoint(db: Session = Depends(get_db)):
+    """
+    触发一次全量扫描，对 DATASET_BASE_DIR 下所有文件做 kind 嗅探并 upsert。
+    """
+    scanned, added, updated, removed = scan_and_upsert(db)
+    return ScanResponse(scanned=scanned, added=added, updated=updated, removed=removed)
+
+
+@app.get("/api/datasets/{ds_id}/preview", response_model=DatasetPreview, tags=["数据集"])
+def preview_dataset_endpoint(
+    ds_id: int,
+    n: int = Query(5, ge=1, le=50),
+    db: Session = Depends(get_db),
+):
+    """读数据集前 N 行，前端用来检查列名是否对得上。"""
+    ds = db.query(Dataset).filter(Dataset.id == ds_id).first()
+    if not ds:
+        raise HTTPException(status_code=404, detail=f"Dataset {ds_id} not found")
+    data = preview_dataset(ds, n=n)
+    return DatasetPreview(**data)
+
+
+@app.delete("/api/datasets/{ds_id}", response_model=MessageResponse, tags=["数据集"])
+def delete_dataset(ds_id: int, db: Session = Depends(get_db)):
+    """
+    从注册表移除一条记录（不删除磁盘文件）。
+
+    如果用户想同时清掉磁盘文件，自己去删 → 下次 scan 会把它标 missing。
+    """
+    ds = db.query(Dataset).filter(Dataset.id == ds_id).first()
+    if not ds:
+        raise HTTPException(status_code=404, detail=f"Dataset {ds_id} not found")
+    db.delete(ds)
+    db.commit()
+    return MessageResponse(message=f"Dataset {ds_id} removed from registry")
+
+
+# ── HuggingFace 拉取 API ──
+
+@app.post("/api/dataset-pulls", response_model=DatasetPullOut, tags=["数据集"])
+def create_dataset_pull(req: DatasetPullCreate, db: Session = Depends(get_db)):
+    """
+    提交一个 HF 数据集拉取任务。worker 会消费它并把数据下到 DATASET_BASE_DIR 下。
+    """
+    pull = DatasetPull(
+        repo_id=req.repo_id.strip(),
+        revision=(req.revision or None),
+        status="queued",
+    )
+    db.add(pull)
+    db.commit()
+    db.refresh(pull)
+    return DatasetPullOut.model_validate(pull)
+
+
+@app.get("/api/dataset-pulls", response_model=list[DatasetPullOut], tags=["数据集"])
+def list_dataset_pulls(
+    limit: int = Query(50, ge=1, le=200),
+    db: Session = Depends(get_db),
+):
+    """拉取任务列表，最近的在前。"""
+    rows = (
+        db.query(DatasetPull)
+        .order_by(DatasetPull.created_at.desc())
+        .limit(limit)
+        .all()
+    )
+    return [DatasetPullOut.model_validate(r) for r in rows]
+
+
+@app.get("/api/dataset-pulls/{pull_id}", response_model=DatasetPullOut, tags=["数据集"])
+def get_dataset_pull(pull_id: int, db: Session = Depends(get_db)):
+    pull = db.query(DatasetPull).filter(DatasetPull.id == pull_id).first()
+    if not pull:
+        raise HTTPException(status_code=404, detail=f"Pull job {pull_id} not found")
+    return DatasetPullOut.model_validate(pull)
 
 
 # ──────────────────────────────────────

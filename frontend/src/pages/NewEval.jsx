@@ -1,8 +1,9 @@
-import { useState, useEffect } from 'react'
+import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Play, FolderOpen, ChevronDown } from 'lucide-react'
+import { Play, ChevronDown } from 'lucide-react'
 import { api } from '../api'
 import { COLORS } from '../theme'
+import DatasetPicker from '../components/DatasetPicker'
 
 const TOKENIZE_OPTIONS = [
   { value: 'auto',   label: 'Auto (detect language)' },
@@ -18,21 +19,11 @@ export default function NewEval() {
     dataset_path: '',
     tokenize_mode: 'auto',
   })
-  const [datasets, setDatasets] = useState([])
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState('')
   const navigate = useNavigate()
 
-  useEffect(() => {
-    api.listDatasets().then(d => setDatasets(d.datasets || [])).catch(() => {})
-  }, [])
-
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }))
-
-  const pickDataset = (ds) => {
-    set('dataset_path', ds.path)
-    if (!form.dataset_name) set('dataset_name', ds.name)
-  }
 
   const handleSubmit = async (e) => {
     e.preventDefault()
@@ -92,43 +83,15 @@ export default function NewEval() {
         <div style={{ ...card, marginTop: 16 }}>
           <h2 style={sectionTitle}>Dataset</h2>
 
-          {datasets.length > 0 && (
-            <div style={field}>
-              <label style={labelStyle}>Quick-pick from scanned datasets</label>
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-                {datasets.map(ds => (
-                  <button
-                    key={ds.path}
-                    type="button"
-                    onClick={() => pickDataset(ds)}
-                    style={{
-                      padding: '6px 12px', borderRadius: 8, fontSize: 12, cursor: 'pointer',
-                      border: `1px solid ${form.dataset_path === ds.path ? COLORS.accent : COLORS.border}`,
-                      background: form.dataset_path === ds.path ? COLORS.accent + '18' : '#fff',
-                      color: form.dataset_path === ds.path ? COLORS.accent : COLORS.textMid,
-                      fontWeight: form.dataset_path === ds.path ? 600 : 400,
-                    }}
-                  >
-                    <FolderOpen size={12} style={{ marginRight: 5, verticalAlign: 'middle' }} />
-                    {ds.name}
-                    {ds.total_rows && <span style={{ color: COLORS.textLight, marginLeft: 4 }}>({ds.total_rows.toLocaleString()} rows)</span>}
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
-
           <div style={field}>
-            <label style={labelStyle}>Dataset Path *</label>
-            <input
-              style={input}
-              placeholder="/dataset/csv-results/common_test.csv"
+            <DatasetPicker
+              kind="eval_csv"
+              label="Dataset"
+              required
               value={form.dataset_path}
-              onChange={e => set('dataset_path', e.target.value)}
+              onChange={v => set('dataset_path', v)}
+              placeholder="/dataset/csv-results/common_test.csv"
             />
-            <span style={{ fontSize: 11, color: COLORS.textLight, marginTop: 4, display: 'block' }}>
-              Full path to a CSV file or directory on the server
-            </span>
           </div>
 
           <div style={field}>

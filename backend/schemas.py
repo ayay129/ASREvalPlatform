@@ -193,6 +193,69 @@ class DatasetListResponse(BaseModel):
     base_dir: str = Field(..., description="数据集根目录")
 
 
+# ——— 注册表模型（Dataset / DatasetPull）———
+
+class DatasetOut(BaseModel):
+    """注册表里的一条数据集记录。"""
+    id: int
+    name: str
+    kind: str                # eval_csv / train_manifest
+    path: str
+    rows: Optional[int] = None
+    size_bytes: Optional[int] = None
+    duration_sec: Optional[float] = None
+    language: Optional[str] = None
+    source: str = "local"
+    source_repo: Optional[str] = None
+    source_split: Optional[str] = None
+    status: str = "ready"
+    note: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class DatasetPreview(BaseModel):
+    """数据集预览：前几行内容，供前端检查列名/字段对不对。"""
+    kind: str
+    columns: Optional[List[str]] = None
+    rows: List[dict]
+
+
+class ScanResponse(BaseModel):
+    scanned: int = Field(..., description="本次走过的候选文件数")
+    added: int = Field(..., description="新增 dataset 记录数")
+    updated: int = Field(..., description="已存在、但元信息被更新的记录数")
+    removed: int = Field(..., description="原路径已不存在、被标 missing 的记录数")
+
+
+class DatasetPullCreate(BaseModel):
+    repo_id: str = Field(
+        ...,
+        min_length=1,
+        description="HuggingFace 数据集仓库 ID，如 user/my-dataset",
+        examples=["asr-community/tibetan-common-voice"],
+    )
+    revision: Optional[str] = Field(None, description="分支/tag/commit，默认 main")
+
+
+class DatasetPullOut(BaseModel):
+    id: int
+    repo_id: str
+    revision: Optional[str] = None
+    local_dir: Optional[str] = None
+    status: str
+    error_message: Optional[str] = None
+    log_tail: Optional[str] = None
+    registered_count: int = 0
+    created_at: datetime
+    started_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+
+    model_config = {"from_attributes": True}
+
+
 # ──────────────────────────────────────
 # 3. 训练任务相关
 # ──────────────────────────────────────

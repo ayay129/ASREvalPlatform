@@ -31,7 +31,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
 
-from database import SessionLocal, TrainRun, init_db
+from database import SessionLocal, TrainRun, DatasetPull, init_db
+from dataset_loader import DATASET_BASE_DIR
+from dataset_registry import scan_and_upsert
 
 
 # ──────────────────────────────────────
@@ -439,6 +441,175 @@ def _run_finetune_subprocess(run: TrainRun) -> int:
 # 入口
 # ──────────────────────────────────────
 
+# ──────────────────────────────────────
+# DatasetPull（HuggingFace 拉取）消费
+# ──────────────────────────────────────
+
+def _claim_next_dataset_pull() -> Optional[int]:
+    """取出最早的 queued 拉取任务。"""
+    db = SessionLocal()
+    try:
+        pull = (
+            db.query(DatasetPull)
+            .filter(DatasetPull.status == "queued")
+            .order_by(DatasetPull.created_at.asc())
+            .first()
+        )
+        if not pull:
+            return None
+        pull.status = "running"
+        pull.started_at = datetime.utcnow()
+        pull.error_message = None
+        db.commit()
+        db.refresh(pull)
+        print(f"[WORKER] Claimed dataset pull #{pull.id}: {pull.repo_id}")
+        return pull.id
+    finally:
+        db.close()
+
+
+def _finish_dataset_pull(
+    pull_id: int,
+    *,
+    status: str,
+    local_dir: Optional[str] = None,
+    error: Optional[str] = None,
+    log_tail: Optional[str] = None,
+    registered_count: int = 0,
+) -> None:
+    db = SessionLocal()
+    try:
+        pull = db.query(DatasetPull).filter(DatasetPull.id == pull_id).first()
+        if not pull:
+            return
+        pull.status = status
+        pull.completed_at = datetime.utcnow()
+        if local_dir is not None:
+            pull.local_dir = local_dir
+        if error is not None:
+            pull.error_message = error[:2000]
+        if log_tail is not None:
+            pull.log_tail = log_tail[-4000:]
+        pull.registered_count = registered_count
+        db.commit()
+    finally:
+        db.close()
+
+
+def _repo_slug(repo_id: str) -> str:
+    """把 user/name 转成目录安全名：user__name。"""
+    return repo_id.replace("/", "__").replace("\\", "__")
+
+
+def _run_huggingface_pull(pull_id: int) -> None:
+    """
+    真正执行一次 HF 数据集下载。
+    走 huggingface_hub.snapshot_download，然后扫描目标目录把里面识别到的
+    CSV/JSONL upsert 进 datasets 表。
+    """
+    db = SessionLocal()
+    try:
+        pull = db.query(DatasetPull).filter(DatasetPull.id == pull_id).first()
+        if not pull:
+            return
+        repo_id = pull.repo_id
+        revision = pull.revision
+    finally:
+        db.close()
+
+    try:
+        from huggingface_hub import snapshot_download
+    except ImportError:
+        _finish_dataset_pull(
+            pull_id,
+            status="failed",
+            error="huggingface_hub not installed. `pip install huggingface_hub`",
+        )
+        return
+
+    target_dir = Path(DATASET_BASE_DIR) / _repo_slug(repo_id)
+    target_dir.mkdir(parents=True, exist_ok=True)
+    print(f"[WORKER] HF pull → {target_dir}  (repo={repo_id}, rev={revision})")
+
+    log_lines: list[str] = [
+        f"[{datetime.utcnow().isoformat()}Z] snapshot_download start",
+        f"repo_id    = {repo_id}",
+        f"revision   = {revision or 'main'}",
+        f"local_dir  = {target_dir}",
+    ]
+
+    try:
+        snapshot_download(
+            repo_id=repo_id,
+            repo_type="dataset",
+            revision=revision,
+            local_dir=str(target_dir),
+            local_dir_use_symlinks=False,
+        )
+        log_lines.append("snapshot_download done")
+    except Exception as exc:
+        log_lines.append(f"snapshot_download FAILED: {exc}")
+        _finish_dataset_pull(
+            pull_id,
+            status="failed",
+            local_dir=str(target_dir),
+            error=str(exc),
+            log_tail="\n".join(log_lines),
+        )
+        return
+
+    # 下载成功，扫描入库
+    registered_count = 0
+    db = SessionLocal()
+    try:
+        scanned, added, updated, _removed = scan_and_upsert(
+            db,
+            base_dir=str(target_dir),
+            source="huggingface",
+            source_repo=repo_id,
+        )
+        registered_count = added + updated
+        log_lines.append(
+            f"scan: scanned={scanned}, added={added}, updated={updated}"
+        )
+    except Exception as exc:
+        log_lines.append(f"scan FAILED: {exc}")
+        _finish_dataset_pull(
+            pull_id,
+            status="failed",
+            local_dir=str(target_dir),
+            error=f"downloaded but scan failed: {exc}",
+            log_tail="\n".join(log_lines),
+        )
+        return
+    finally:
+        db.close()
+
+    _finish_dataset_pull(
+        pull_id,
+        status="completed",
+        local_dir=str(target_dir),
+        log_tail="\n".join(log_lines),
+        registered_count=registered_count,
+    )
+    print(f"[WORKER] HF pull #{pull_id} done, registered {registered_count} files")
+
+
+def process_one_dataset_pull() -> bool:
+    pull_id = _claim_next_dataset_pull()
+    if pull_id is None:
+        return False
+    try:
+        _run_huggingface_pull(pull_id)
+    except Exception as exc:
+        _finish_dataset_pull(pull_id, status="failed", error=f"unexpected: {exc}")
+    return True
+
+
+# ──────────────────────────────────────
+# TrainRun 消费
+# ──────────────────────────────────────
+
 def process_one_train_run() -> bool:
     """
     处理一条任务。
@@ -520,7 +691,10 @@ def main() -> None:
 
     while True:
         try:
-            handled = process_one_train_run()
+            # 先处理轻量的数据集拉取（不占 GPU），再轮训练任务
+            handled = process_one_dataset_pull()
+            if not handled:
+                handled = process_one_train_run()
         except KeyboardInterrupt:
             print("[WORKER] Interrupted, exiting.")
             break

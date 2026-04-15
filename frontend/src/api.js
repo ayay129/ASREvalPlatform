@@ -3,9 +3,29 @@ import axios from 'axios'
 const http = axios.create({ baseURL: '/api' })
 
 export const api = {
-  // Datasets
-  listDatasets: () =>
-    http.get('/datasets').then(r => r.data),
+  // Datasets (registry)
+  listDatasets: (params = {}) =>
+    http.get('/datasets', { params }).then(r => r.data),
+
+  scanDatasets: () =>
+    http.post('/datasets/scan').then(r => r.data),
+
+  previewDataset: (id, n = 5) =>
+    http.get(`/datasets/${id}/preview`, { params: { n } }).then(r => r.data),
+
+  deleteDataset: (id) =>
+    http.delete(`/datasets/${id}`).then(r => r.data),
+
+  // HF pull jobs
+  listDatasetPulls: () =>
+    http.get('/dataset-pulls').then(r => r.data),
+
+  createDatasetPull: (body) =>
+    http.post('/dataset-pulls', body).then(r => r.data),
+
+  // legacy 扫描接口（保留）
+  listDatasetsLegacy: () =>
+    http.get('/datasets/legacy').then(r => r.data),
 
   // Train runs
   listTrainRuns: (params = {}) =>

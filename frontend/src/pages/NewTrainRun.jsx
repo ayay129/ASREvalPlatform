@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { Play, ChevronDown } from 'lucide-react'
 import { api } from '../api'
 import { COLORS } from '../theme'
+import DatasetPicker from '../components/DatasetPicker'
 
 export default function NewTrainRun() {
   const [form, setForm] = useState({
@@ -99,22 +100,24 @@ export default function NewTrainRun() {
           </div>
 
           <div style={field}>
-            <label style={labelStyle}>Train Data Path *</label>
-            <input
-              style={input}
-              placeholder="/data/manifests/tibetan/train.json"
+            <DatasetPicker
+              kind="train_manifest"
+              label="Train Data"
+              required
               value={form.train_data_path}
-              onChange={e => set('train_data_path', e.target.value)}
+              onChange={v => set('train_data_path', v)}
+              placeholder="/data/manifests/tibetan/train.json"
             />
           </div>
 
           <div style={field}>
-            <label style={labelStyle}>Test Data Path *</label>
-            <input
-              style={input}
-              placeholder="/data/manifests/tibetan/test.json"
+            <DatasetPicker
+              kind="train_manifest"
+              label="Test Data"
+              required
               value={form.test_data_path}
-              onChange={e => set('test_data_path', e.target.value)}
+              onChange={v => set('test_data_path', v)}
+              placeholder="/data/manifests/tibetan/test.json"
             />
           </div>
 

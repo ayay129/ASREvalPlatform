@@ -297,6 +297,78 @@ class TrainRun(Base):
         )
 
 
+class Dataset(Base):
+    """
+    datasets 表 — 数据集注册表
+
+    平台只认"注册过"的数据集。注册有两种来源：
+      1. 磁盘扫描 (source='local')：walk DATASET_BASE_DIR，识别
+         CSV / JSONL / manifest 后 upsert 一行
+      2. HuggingFace 拉取 (source='huggingface')：走 DatasetPull
+         下载完再扫描入库，本字段会填 source_repo
+
+    kind 决定它能被用到哪里：
+      - eval_csv       → NewEval 可用（含 transcription+predicted_string 列的 CSV）
+      - train_manifest → NewTrainRun 可用（Whisper-Finetune JSONL manifest）
+    """
+    __tablename__ = "datasets"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String(255), nullable=False, index=True)
+    kind = Column(String(32), nullable=False, index=True)   # eval_csv / train_manifest
+    path = Column(Text, nullable=False, unique=True)
+
+    # 元信息
+    rows = Column(Integer, nullable=True)
+    size_bytes = Column(Integer, nullable=True)
+    duration_sec = Column(Float, nullable=True)   # 仅对 train_manifest 有值
+    language = Column(String(64), nullable=True)
+
+    # 来源
+    source = Column(String(32), default="local")   # local / huggingface
+    source_repo = Column(String(255), nullable=True)
+    source_split = Column(String(64), nullable=True)
+
+    # 状态
+    status = Column(String(20), default="ready")   # ready / missing
+    note = Column(Text, nullable=True)
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    def __repr__(self):
+        return f"<Dataset(id={self.id}, name='{self.name}', kind='{self.kind}')>"
+
+
+class DatasetPull(Base):
+    """
+    dataset_pulls 表 — HuggingFace 数据集拉取任务
+
+    worker 消费 queued 任务，调用 snapshot_download 到 DATASET_BASE_DIR 下，
+    完成后触发 scan 把里面可识别的文件注册进 datasets 表。
+    """
+    __tablename__ = "dataset_pulls"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    repo_id = Column(String(255), nullable=False, index=True)
+    revision = Column(String(128), nullable=True)
+    local_dir = Column(Text, nullable=True)   # worker 填入实际落盘目录
+
+    status = Column(String(20), default="queued", index=True)  # queued/running/completed/failed
+    error_message = Column(Text, nullable=True)
+    log_tail = Column(Text, nullable=True)    # 保存最后几行 stdout，便于前端展示
+
+    # 拉完后回填：创建了多少条 datasets 记录
+    registered_count = Column(Integer, default=0)
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+    started_at = Column(DateTime, nullable=True)
+    completed_at = Column(DateTime, nullable=True)
+
+    def __repr__(self):
+        return f"<DatasetPull(id={self.id}, repo_id='{self.repo_id}', status='{self.status}')>"
+
+
 # ──────────────────────────────────────
 # 3. 工具函数
 # ──────────────────────────────────────

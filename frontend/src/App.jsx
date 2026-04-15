@@ -7,6 +7,7 @@ import Compare from './pages/Compare'
 import TrainRuns from './pages/TrainRuns'
 import NewTrainRun from './pages/NewTrainRun'
 import TrainRunDetail from './pages/TrainRunDetail'
+import Datasets from './pages/Datasets'
 
 export default function App() {
   return (
@@ -15,6 +16,7 @@ export default function App() {
         <Route element={<Layout />}>
           <Route index element={<Navigate to="/dashboard" replace />} />
           <Route path="/dashboard" element={<Dashboard />} />
+          <Route path="/datasets" element={<Datasets />} />
           <Route path="/train-runs" element={<TrainRuns />} />
           <Route path="/train-runs/new" element={<NewTrainRun />} />
           <Route path="/train-runs/:id" element={<TrainRunDetail />} />
