@@ -132,6 +132,12 @@ class Evaluation(Base):
     error_message = Column(Text, nullable=True)
     report_path = Column(Text, nullable=True)
 
+    # ── 推理评测扩展（从训练任务一键评测时使用） ──
+    model_path = Column(Text, nullable=True)           # 合并模型路径（设了 → 先跑推理）
+    test_manifest_path = Column(Text, nullable=True)   # 原始 JSONL manifest 路径
+    train_run_id = Column(Integer, nullable=True)      # 关联训练任务 ID
+    gpu_id = Column(String(32), nullable=True)         # 推理使用的 GPU
+
     # ── 时间戳 ──
     created_at = Column(DateTime, default=datetime.utcnow)
     completed_at = Column(DateTime, nullable=True)
@@ -263,6 +269,7 @@ class TrainRun(Base):
     augment_config_path = Column(Text, nullable=True)
     resume_from_checkpoint = Column(Text, nullable=True)
     hub_model_id = Column(String(255), nullable=True)
+    gpu_id = Column(String(32), nullable=True)   # e.g. "0", "0,1"
 
     # ── 任务状态 ──
     status = Column(String(20), default="queued", index=True)
@@ -434,6 +441,7 @@ def _migrate_train_runs():
         "merged_model_path": "TEXT",
         "phase": "VARCHAR(20)",
         "pid": "INTEGER",
+        "gpu_id": "VARCHAR(32)",
     }
 
     inspector = inspect(engine)
@@ -449,6 +457,30 @@ def _migrate_train_runs():
         for name, ddl in missing:
             conn.execute(text(f"ALTER TABLE train_runs ADD COLUMN {name} {ddl}"))
             print(f"[DB] Added column train_runs.{name}")
+
+
+def _migrate_evaluations():
+    """给老的 evaluations 表补齐推理评测所需的新列。"""
+    expected_columns = {
+        "model_path": "TEXT",
+        "test_manifest_path": "TEXT",
+        "train_run_id": "INTEGER",
+        "gpu_id": "VARCHAR(32)",
+    }
+
+    inspector = inspect(engine)
+    if "evaluations" not in inspector.get_table_names():
+        return
+
+    existing = {col["name"] for col in inspector.get_columns("evaluations")}
+    missing = [(name, ddl) for name, ddl in expected_columns.items() if name not in existing]
+    if not missing:
+        return
+
+    with engine.begin() as conn:
+        for name, ddl in missing:
+            conn.execute(text(f"ALTER TABLE evaluations ADD COLUMN {name} {ddl}"))
+            print(f"[DB] Added column evaluations.{name}")
 
 
 def _migrate_dataset_pulls():
@@ -478,6 +510,7 @@ def init_db():
     在 FastAPI 启动时调用一次即可。
     """
     Base.metadata.create_all(bind=engine)
+    _migrate_evaluations()
     _migrate_train_runs()
     _migrate_dataset_pulls()
 

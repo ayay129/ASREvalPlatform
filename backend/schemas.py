@@ -84,6 +84,7 @@ class EvalSummary(BaseModel):
     corpus_ser: Optional[float] = None
 
     status: str
+    train_run_id: Optional[int] = None
     created_at: datetime
     completed_at: Optional[datetime] = None
 
@@ -162,6 +163,7 @@ class EvalFullResponse(BaseModel):
     status: str
     error_message: Optional[str] = None
     report_path: Optional[str] = None
+    train_run_id: Optional[int] = None
     created_at: datetime
     completed_at: Optional[datetime] = None
 
@@ -169,6 +171,30 @@ class EvalFullResponse(BaseModel):
     details: List[EvalDetailItem] = []
 
     model_config = {"from_attributes": True}
+
+
+class TrainRunEvalRequest(BaseModel):
+    """
+    从训练任务一键发起评测的请求体。
+    """
+    test_data_path: str = Field(
+        ...,
+        min_length=1,
+        description="测试集 JSONL manifest 路径",
+        examples=["/data/manifests/mn/test.jsonl"],
+    )
+    dataset_name: str = Field(
+        "",
+        description="数据集显示名称（留空则自动取文件名）",
+    )
+    tokenize_mode: str = Field(
+        "auto",
+        description="分词模式: auto / whisper / char / space",
+    )
+    gpu_id: Optional[str] = Field(
+        None,
+        description="指定推理使用的 GPU，如 '0'；留空使用所有可用 GPU",
+    )
 
 
 # ──────────────────────────────────────
@@ -404,6 +430,7 @@ class TrainRunCreate(BaseModel):
     augment_config_path: Optional[str] = Field(None, description="数据增强配置文件路径")
     resume_from_checkpoint: Optional[str] = Field(None, description="恢复训练的 checkpoint 路径")
     hub_model_id: Optional[str] = Field(None, description="推送到 Hub 时的仓库 ID")
+    gpu_id: Optional[str] = Field(None, description="指定 GPU，如 '0'、'0,1'；留空使用所有可用 GPU")
 
 
 class TrainRunSummary(BaseModel):
@@ -456,6 +483,7 @@ class TrainRunDetail(BaseModel):
     augment_config_path: Optional[str] = None
     resume_from_checkpoint: Optional[str] = None
     hub_model_id: Optional[str] = None
+    gpu_id: Optional[str] = None
     status: str
     error_message: Optional[str] = None
 
@@ -523,7 +551,32 @@ class CompareResponse(BaseModel):
 
 
 # ──────────────────────────────────────
-# 5. 通用响应
+# 5. GPU 状态
+# ──────────────────────────────────────
+
+class GpuInfo(BaseModel):
+    """单块 GPU 的实时状态"""
+    index: int
+    name: str
+    utilization_pct: float = 0.0
+    memory_used_mb: float = 0.0
+    memory_total_mb: float = 0.0
+    memory_pct: float = 0.0
+    temperature: Optional[int] = None
+    power_draw_w: Optional[float] = None
+    power_limit_w: Optional[float] = None
+
+
+class GpuStatusResponse(BaseModel):
+    """服务器 GPU 概览"""
+    available: bool = False
+    driver_version: Optional[str] = None
+    cuda_version: Optional[str] = None
+    gpus: List[GpuInfo] = []
+
+
+# ──────────────────────────────────────
+# 6. 通用响应
 # ──────────────────────────────────────
 
 class MessageResponse(BaseModel):

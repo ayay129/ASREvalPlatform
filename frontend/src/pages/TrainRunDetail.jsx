@@ -1,12 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
-import { ArrowLeft, RefreshCw, Terminal, Activity } from 'lucide-react'
+import { ArrowLeft, RefreshCw, Terminal, Activity, FlaskConical, X } from 'lucide-react'
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
 } from 'recharts'
 import { api } from '../api'
 import { COLORS } from '../theme'
 import StatusBadge from '../components/StatusBadge'
+import DatasetPicker from '../components/DatasetPicker'
+import GpuPicker from '../components/GpuPicker'
 
 const fmtDate = (v) => (v ? new Date(v).toLocaleString() : '—')
 const fmtNum = (v, d = 4) => (v == null || Number.isNaN(v) ? '—' : Number(v).toFixed(d))
@@ -19,6 +21,7 @@ export default function TrainRunDetail() {
   const [log, setLog] = useState({ lines: [], total_lines: 0, path: null })
   const [error, setError] = useState('')
   const [autoScroll, setAutoScroll] = useState(true)
+  const [showEvalModal, setShowEvalModal] = useState(false)
   const logBoxRef = useRef(null)
 
   const load = useCallback(async () => {
@@ -96,9 +99,16 @@ export default function TrainRunDetail() {
             </div>
           </div>
         </div>
-        <button onClick={load} style={refreshBtn}>
-          <RefreshCw size={15} /> Refresh
-        </button>
+        <div style={{ display: 'flex', gap: 10 }}>
+          {run.status === 'completed' && run.merged_model_path && (
+            <button onClick={() => setShowEvalModal(true)} style={evalBtn}>
+              <FlaskConical size={15} /> Evaluate
+            </button>
+          )}
+          <button onClick={load} style={refreshBtn}>
+            <RefreshCw size={15} /> Refresh
+          </button>
+        </div>
       </div>
 
       {/* Progress + quick stats */}
@@ -204,9 +214,117 @@ export default function TrainRunDetail() {
           </div>
         )}
       </div>
+
+      {/* Eval modal */}
+      {showEvalModal && (
+        <EvalModal
+          run={run}
+          onClose={() => setShowEvalModal(false)}
+          onSuccess={(evalId) => navigate(`/report/${evalId}`)}
+        />
+      )}
     </div>
   )
 }
+
+// ──────────────────── EvalModal ────────────────────
+
+function EvalModal({ run, onClose, onSuccess }) {
+  const [testPath, setTestPath] = useState(run.test_data_path || '')
+  const [datasetName, setDatasetName] = useState('')
+  const [tokenizeMode, setTokenizeMode] = useState('auto')
+  const [gpuId, setGpuId] = useState('')
+  const [submitting, setSubmitting] = useState(false)
+  const [err, setErr] = useState('')
+
+  const handleSubmit = async () => {
+    if (!testPath.trim()) { setErr('Please select a test dataset'); return }
+    setSubmitting(true)
+    setErr('')
+    try {
+      const res = await api.evaluateTrainRun(run.id, {
+        test_data_path: testPath.trim(),
+        dataset_name: datasetName.trim(),
+        tokenize_mode: tokenizeMode,
+        gpu_id: gpuId || undefined,
+      })
+      onSuccess(res.id)
+    } catch (e) {
+      setErr(e.response?.data?.detail || e.message || 'Failed')
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <div style={modalOverlay} onClick={onClose}>
+      <div style={modalBox} onClick={e => e.stopPropagation()}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
+          <h2 style={{ fontSize: 18, fontWeight: 700, color: COLORS.textDark, margin: 0 }}>
+            <FlaskConical size={18} style={{ marginRight: 8, verticalAlign: -3 }} />
+            Evaluate Model
+          </h2>
+          <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', color: COLORS.textLight }}>
+            <X size={18} />
+          </button>
+        </div>
+
+        <div style={{ marginBottom: 12, padding: '10px 14px', background: COLORS.bg, borderRadius: 8, fontSize: 13 }}>
+          <div style={{ color: COLORS.textLight, fontSize: 11, marginBottom: 4 }}>Merged model</div>
+          <code style={{ color: COLORS.textDark, fontSize: 12, wordBreak: 'break-all' }}>
+            {run.merged_model_path}
+          </code>
+        </div>
+
+        <div style={{ marginBottom: 16 }}>
+          <DatasetPicker
+            kind="train_manifest"
+            value={testPath}
+            onChange={setTestPath}
+            label="Test dataset (JSONL manifest)"
+          />
+          <div style={{ fontSize: 11, color: COLORS.warning, marginTop: 6, lineHeight: 1.5 }}>
+            Note: The test_data used during training was for validation.
+            For final evaluation, select your held-out <b>test.jsonl</b> manifest.
+          </div>
+        </div>
+
+        <div style={{ marginBottom: 16 }}>
+          <label style={labelStyle}>Dataset name (optional)</label>
+          <input
+            style={inputStyle}
+            placeholder="e.g. mn-test-cv22"
+            value={datasetName}
+            onChange={e => setDatasetName(e.target.value)}
+          />
+        </div>
+
+        <div style={{ marginBottom: 16 }}>
+          <label style={labelStyle}>Tokenize mode</label>
+          <select style={inputStyle} value={tokenizeMode} onChange={e => setTokenizeMode(e.target.value)}>
+            <option value="auto">auto (detect language)</option>
+            <option value="char">char (character-level)</option>
+            <option value="space">space (space-delimited)</option>
+            <option value="whisper">whisper (Whisper tokenizer)</option>
+          </select>
+        </div>
+
+        <div style={{ marginBottom: 20 }}>
+          <GpuPicker value={gpuId} onChange={setGpuId} label="GPU for inference" />
+        </div>
+
+        {err && <div style={{ ...errorBox, marginBottom: 16 }}>{err}</div>}
+
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
+          <button onClick={onClose} style={cancelBtn}>Cancel</button>
+          <button onClick={handleSubmit} disabled={submitting} style={submitBtn}>
+            {submitting ? 'Starting...' : 'Run Evaluation'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 
 // ──────────────────── helpers ────────────────────
 
@@ -377,4 +495,48 @@ const errorBox = {
   color: COLORS.danger,
   fontSize: 13,
   whiteSpace: 'pre-wrap',
+}
+
+const evalBtn = {
+  display: 'flex', alignItems: 'center', gap: 6,
+  padding: '8px 16px', borderRadius: 8,
+  border: 'none',
+  background: COLORS.accent, color: '#fff',
+  cursor: 'pointer', fontSize: 13, fontWeight: 600,
+}
+
+const modalOverlay = {
+  position: 'fixed', inset: 0, zIndex: 1000,
+  background: 'rgba(0,0,0,0.45)',
+  display: 'flex', alignItems: 'center', justifyContent: 'center',
+}
+
+const modalBox = {
+  background: '#fff', borderRadius: 14, padding: '28px 32px',
+  width: 520, maxHeight: '85vh', overflow: 'auto',
+  boxShadow: '0 20px 60px rgba(0,0,0,0.25)',
+}
+
+const labelStyle = {
+  display: 'block', fontSize: 13, fontWeight: 600,
+  color: COLORS.textMid, marginBottom: 6,
+}
+
+const inputStyle = {
+  width: '100%', padding: '9px 12px', borderRadius: 8,
+  border: `1px solid ${COLORS.border}`, fontSize: 13,
+  color: COLORS.textDark, outline: 'none',
+  boxSizing: 'border-box',
+}
+
+const cancelBtn = {
+  padding: '8px 18px', borderRadius: 8, fontSize: 13, fontWeight: 600,
+  border: `1px solid ${COLORS.border}`, background: '#fff',
+  color: COLORS.textMid, cursor: 'pointer',
+}
+
+const submitBtn = {
+  padding: '8px 22px', borderRadius: 8, fontSize: 13, fontWeight: 600,
+  border: 'none', background: COLORS.accent, color: '#fff',
+  cursor: 'pointer',
 }

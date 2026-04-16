@@ -325,6 +325,8 @@ def _run_merge_subprocess(run: TrainRun, lora_path: str) -> int:
     log_file = LOG_DIR / f"train_run_{run.id}.log"
     env = os.environ.copy()
     env.setdefault("PYTHONUNBUFFERED", "1")
+    if run.gpu_id:
+        env["CUDA_VISIBLE_DEVICES"] = run.gpu_id
 
     print(f"[WORKER] Merging LoRA: {' '.join(shlex.quote(c) for c in cmd)}")
 
@@ -385,6 +387,10 @@ def _run_finetune_subprocess(run: TrainRun) -> int:
     # worker 的工作目录切到 finetune/ 下，保证其 utils.* 相对 import 能解析
     env = os.environ.copy()
     env.setdefault("PYTHONUNBUFFERED", "1")
+    # 如果指定了 GPU，设置 CUDA_VISIBLE_DEVICES
+    if run.gpu_id:
+        env["CUDA_VISIBLE_DEVICES"] = run.gpu_id
+        print(f"[WORKER] CUDA_VISIBLE_DEVICES={run.gpu_id}")
 
     print(f"[WORKER] Launching: {' '.join(shlex.quote(c) for c in cmd)}")
     print(f"[WORKER] Log file: {log_file}")

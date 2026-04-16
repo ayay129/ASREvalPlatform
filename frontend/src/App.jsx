@@ -1,6 +1,7 @@
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import Layout from './components/Layout'
 import Dashboard from './pages/Dashboard'
+import Evaluations from './pages/Evaluations'
 import NewEval from './pages/NewEval'
 import Report from './pages/Report'
 import Compare from './pages/Compare'
@@ -20,6 +21,7 @@ export default function App() {
           <Route path="/train-runs" element={<TrainRuns />} />
           <Route path="/train-runs/new" element={<NewTrainRun />} />
           <Route path="/train-runs/:id" element={<TrainRunDetail />} />
+          <Route path="/evaluations" element={<Evaluations />} />
           <Route path="/new" element={<NewEval />} />
           <Route path="/report/:id" element={<Report />} />
           <Route path="/compare" element={<Compare />} />

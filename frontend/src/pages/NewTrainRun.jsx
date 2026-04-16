@@ -4,6 +4,7 @@ import { Play, ChevronDown } from 'lucide-react'
 import { api } from '../api'
 import { COLORS } from '../theme'
 import DatasetPicker from '../components/DatasetPicker'
+import GpuPicker from '../components/GpuPicker'
 
 export default function NewTrainRun() {
   const [form, setForm] = useState({
@@ -26,6 +27,7 @@ export default function NewTrainRun() {
     use_compile: false,
     local_files_only: false,
     push_to_hub: false,
+    gpu_id: '',
   })
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState('')
@@ -55,6 +57,7 @@ export default function NewTrainRun() {
         per_device_train_batch_size: Number(form.per_device_train_batch_size),
         per_device_eval_batch_size: Number(form.per_device_eval_batch_size),
         gradient_accumulation_steps: Number(form.gradient_accumulation_steps),
+        gpu_id: form.gpu_id || undefined,
       })
       navigate('/train-runs')
     } catch (err) {
@@ -244,6 +247,15 @@ export default function NewTrainRun() {
             <Checkbox id="local_files_only" label="Local files only" checked={form.local_files_only} onChange={checked => set('local_files_only', checked)} />
             <Checkbox id="push_to_hub" label="Push to Hub" checked={form.push_to_hub} onChange={checked => set('push_to_hub', checked)} />
           </div>
+        </div>
+
+        <div style={{ ...card, marginTop: 16 }}>
+          <h2 style={sectionTitle}>GPU Selection</h2>
+          <GpuPicker
+            value={form.gpu_id}
+            onChange={v => set('gpu_id', v)}
+            label="Select GPU for training"
+          />
         </div>
 
         {error && (

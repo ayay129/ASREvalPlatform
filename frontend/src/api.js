@@ -59,6 +59,9 @@ export const api = {
   getTrainRunMetrics: (id) =>
     http.get(`/train-runs/${id}/metrics`).then(r => r.data),
 
+  evaluateTrainRun: (id, body) =>
+    http.post(`/train-runs/${id}/evaluate`, body).then(r => r.data),
+
   // Evaluations
   listEvals: (params = {}) =>
     http.get('/evaluations', { params }).then(r => r.data),
@@ -78,4 +81,8 @@ export const api = {
   // Compare
   compare: (ids) =>
     http.post('/compare', { evaluation_ids: ids }).then(r => r.data),
+
+  // GPU
+  gpuStatus: () =>
+    http.get('/gpu-status').then(r => r.data),
 }

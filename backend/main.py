@@ -26,7 +26,11 @@ API 路由总览：
 
 import json
 import os
+import shlex
+import subprocess
+import sys
 from datetime import datetime
+from pathlib import Path
 from typing import Optional
 
 from fastapi import FastAPI, Depends, HTTPException, BackgroundTasks, Query
@@ -42,6 +46,7 @@ from database import (
 from schemas import (
     EvalCreate, EvalSummary, EvalFullResponse, EvalDetailItem,
     EditOpsBreakdown, WerDistribution,
+    TrainRunEvalRequest,
     DatasetListResponse,
     DatasetOut, DatasetPreview, ScanResponse,
     DatasetPullCreate, DatasetPullOut,
@@ -50,6 +55,7 @@ from schemas import (
     TrainRunCreate, TrainRunSummary, TrainRunDetail,
     CompareRequest, CompareResponse, CompareItem,
     MessageResponse,
+    GpuInfo, GpuStatusResponse,
 )
 from dataset_loader import scan_datasets, load_dataset, DATASET_BASE_DIR
 from dataset_registry import scan_and_upsert, preview_dataset
@@ -87,6 +93,78 @@ def on_startup():
     init_db()
     print(f"[INFO] 数据库已初始化")
     print(f"[INFO] 数据集目录: {DATASET_BASE_DIR}")
+
+
+# ──────────────────────────────────────
+# GPU 状态 API
+# ──────────────────────────────────────
+
+def _query_gpu_status() -> GpuStatusResponse:
+    """调用 nvidia-smi 获取 GPU 实时状态。"""
+    try:
+        result = subprocess.run(
+            [
+                "nvidia-smi",
+                "--query-gpu=index,name,utilization.gpu,memory.used,memory.total,temperature.gpu,power.draw,power.limit",
+                "--format=csv,noheader,nounits",
+            ],
+            capture_output=True, text=True, timeout=10,
+        )
+        if result.returncode != 0:
+            return GpuStatusResponse(available=False)
+
+        # 获取 driver / cuda 版本
+        ver_result = subprocess.run(
+            ["nvidia-smi", "--query-gpu=driver_version", "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, timeout=5,
+        )
+        driver_ver = ver_result.stdout.strip().split("\n")[0].strip() if ver_result.returncode == 0 else None
+
+        cuda_ver = None
+        ver2 = subprocess.run(
+            ["nvidia-smi"], capture_output=True, text=True, timeout=5,
+        )
+        if ver2.returncode == 0:
+            import re as _re
+            m = _re.search(r"CUDA Version:\s*([\d.]+)", ver2.stdout)
+            if m:
+                cuda_ver = m.group(1)
+
+        gpus = []
+        for line in result.stdout.strip().split("\n"):
+            parts = [p.strip() for p in line.split(",")]
+            if len(parts) < 5:
+                continue
+            idx = int(parts[0])
+            name = parts[1]
+            util = float(parts[2]) if parts[2] not in ("[N/A]", "") else 0.0
+            mem_used = float(parts[3]) if parts[3] not in ("[N/A]", "") else 0.0
+            mem_total = float(parts[4]) if parts[4] not in ("[N/A]", "") else 1.0
+            temp = int(parts[5]) if len(parts) > 5 and parts[5] not in ("[N/A]", "") else None
+            power_draw = float(parts[6]) if len(parts) > 6 and parts[6] not in ("[N/A]", "") else None
+            power_limit = float(parts[7]) if len(parts) > 7 and parts[7] not in ("[N/A]", "") else None
+            gpus.append(GpuInfo(
+                index=idx,
+                name=name,
+                utilization_pct=util,
+                memory_used_mb=mem_used,
+                memory_total_mb=mem_total,
+                memory_pct=round(mem_used / mem_total * 100, 1) if mem_total > 0 else 0,
+                temperature=temp,
+                power_draw_w=power_draw,
+                power_limit_w=power_limit,
+            ))
+        return GpuStatusResponse(available=True, driver_version=driver_ver, cuda_version=cuda_ver, gpus=gpus)
+    except FileNotFoundError:
+        return GpuStatusResponse(available=False)
+    except Exception:
+        return GpuStatusResponse(available=False)
+
+
+@app.get("/api/gpu-status", response_model=GpuStatusResponse, tags=["系统"])
+def get_gpu_status():
+    """获取服务器 GPU 实时状态。"""
+    return _query_gpu_status()
 
 
 # ──────────────────────────────────────
@@ -360,6 +438,7 @@ def create_train_run(req: TrainRunCreate, db: Session = Depends(get_db)):
         augment_config_path=req.augment_config_path,
         resume_from_checkpoint=req.resume_from_checkpoint,
         hub_model_id=req.hub_model_id,
+        gpu_id=(req.gpu_id.strip() if req.gpu_id else None),
         status="queued",
     )
     db.add(train_run)
@@ -485,6 +564,132 @@ def get_train_run_metrics(run_id: int, db: Session = Depends(get_db)):
                     pass
 
     return {"train": train_points, "eval": eval_points}
+
+
+# ──────────────────────────────────────
+# 3.5 从训练任务一键发起推理评测
+# ──────────────────────────────────────
+
+BACKEND_DIR = Path(__file__).resolve().parent
+BATCH_INFER_SCRIPT = BACKEND_DIR / "scripts" / "batch_infer.py"
+EVAL_OUTPUT_DIR = Path(os.environ.get(
+    "ASR_DATA_DIR",
+    os.path.join(os.path.dirname(__file__), "data"),
+)) / "eval_outputs"
+EVAL_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _run_batch_inference(evaluation) -> str:
+    """
+    以 subprocess 运行 batch_infer.py，返回输出 CSV 路径。
+    在 BackgroundTasks 线程中同步调用。
+    """
+    out_csv = str(EVAL_OUTPUT_DIR / f"eval_{evaluation.id}.csv")
+
+    # 从关联的 TrainRun 读取 language 参数
+    language = "Chinese"
+    if evaluation.train_run_id:
+        from database import SessionLocal as _SL
+        _db = _SL()
+        try:
+            tr = _db.query(TrainRun).filter(TrainRun.id == evaluation.train_run_id).first()
+            if tr and tr.language:
+                language = tr.language
+        finally:
+            _db.close()
+
+    cmd = [
+        sys.executable, "-u", str(BATCH_INFER_SCRIPT),
+        f"--model_path={evaluation.model_path}",
+        f"--test_data={evaluation.test_manifest_path}",
+        f"--out_csv={out_csv}",
+        f"--language={language}",
+        "--batch_size=8",
+        "--local_files_only=True",
+    ]
+
+    # 设置 GPU
+    env = os.environ.copy()
+    env["PYTHONUNBUFFERED"] = "1"
+    if evaluation.gpu_id:
+        env["CUDA_VISIBLE_DEVICES"] = evaluation.gpu_id
+        print(f"[EVAL] CUDA_VISIBLE_DEVICES={evaluation.gpu_id}")
+
+    print(f"[EVAL] Running inference: {' '.join(shlex.quote(c) for c in cmd)}")
+
+    result = subprocess.run(
+        cmd,
+        cwd=str(BACKEND_DIR),
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=7200,  # 2 小时超时
+    )
+
+    # 打印子进程输出便于调试
+    if result.stdout:
+        for line in result.stdout.strip().split("\n")[-20:]:
+            print(f"[EVAL/stdout] {line}")
+    if result.stderr:
+        for line in result.stderr.strip().split("\n")[-20:]:
+            print(f"[EVAL/stderr] {line}")
+
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"batch_infer.py exited with code {result.returncode}\n"
+            f"stderr: {result.stderr[-500:] if result.stderr else '(empty)'}"
+        )
+
+    if not os.path.isfile(out_csv):
+        raise FileNotFoundError(f"Inference completed but output CSV not found: {out_csv}")
+
+    print(f"[EVAL] Inference done → {out_csv}")
+    return out_csv
+
+
+@app.post("/api/train-runs/{train_id}/evaluate", response_model=EvalSummary, tags=["训练"])
+def evaluate_train_run(
+    train_id: int,
+    req: TrainRunEvalRequest,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+):
+    """
+    从一个已完成的训练任务，一键发起推理 + 评测。
+
+    流程：
+      1. 校验训练任务状态和合并模型路径
+      2. 创建 Evaluation（带 model_path → 触发先推理后评测）
+      3. 后台执行推理 + 评测
+    """
+    run = db.query(TrainRun).filter(TrainRun.id == train_id).first()
+    if not run:
+        raise HTTPException(status_code=404, detail=f"训练任务 {train_id} 不存在")
+    if run.status != "completed":
+        raise HTTPException(status_code=400, detail=f"训练任务尚未完成 (status={run.status})")
+    if not run.merged_model_path:
+        raise HTTPException(status_code=400, detail="训练任务没有合并模型路径，可能 merge 阶段失败")
+
+    dataset_name = req.dataset_name.strip() if req.dataset_name.strip() else Path(req.test_data_path).stem
+
+    evaluation = Evaluation(
+        model_name=run.name,
+        dataset_name=dataset_name,
+        dataset_path="",                         # 推理完成后填入
+        model_path=run.merged_model_path,         # ★ 触发推理阶段
+        test_manifest_path=req.test_data_path,
+        train_run_id=run.id,
+        tokenize_mode=req.tokenize_mode,
+        gpu_id=(req.gpu_id.strip() if req.gpu_id else None),
+        status="pending",
+    )
+    db.add(evaluation)
+    db.commit()
+    db.refresh(evaluation)
+
+    background_tasks.add_task(run_evaluation, evaluation.id)
+
+    return EvalSummary.model_validate(evaluation)
 
 
 # ──────────────────────────────────────
@@ -759,6 +964,13 @@ def run_evaluation(eval_id: int):
         # ── 1. 更新状态 ──
         evaluation.status = "running"
         db.commit()
+
+        # ── 1.5 如果有 model_path，先跑推理生成 CSV ──
+        if evaluation.model_path:
+            print(f"[EVAL] Evaluation {eval_id} needs inference (model_path set)")
+            out_csv = _run_batch_inference(evaluation)
+            evaluation.dataset_path = out_csv
+            db.commit()
 
         # ── 2. 加载数据集 ──
         pairs = load_dataset(evaluation.dataset_path)

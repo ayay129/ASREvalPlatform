@@ -1,13 +1,13 @@
 import { Outlet, NavLink, useLocation } from 'react-router-dom'
-import { LayoutDashboard, PlusCircle, GitCompare, Mic2, FlaskConical, Database } from 'lucide-react'
+import { LayoutDashboard, GitCompare, Mic2, FlaskConical, Database, ClipboardList } from 'lucide-react'
 import { COLORS } from '../theme'
 
 const NAV = [
-  { to: '/dashboard',  label: 'Dashboard',  Icon: LayoutDashboard },
-  { to: '/datasets',   label: 'Datasets',   Icon: Database },
-  { to: '/train-runs', label: 'Train Runs', Icon: FlaskConical },
-  { to: '/new',        label: 'New Eval',   Icon: PlusCircle },
-  { to: '/compare',    label: 'Compare',    Icon: GitCompare },
+  { to: '/dashboard',   label: 'Dashboard',   Icon: LayoutDashboard },
+  { to: '/datasets',    label: 'Datasets',    Icon: Database },
+  { to: '/train-runs',  label: 'Train Runs',  Icon: FlaskConical },
+  { to: '/evaluations', label: 'Evaluations', Icon: ClipboardList },
+  { to: '/compare',     label: 'Compare',     Icon: GitCompare },
 ]
 
 const S = {
