@@ -446,6 +446,9 @@ class TrainRunSummary(BaseModel):
     current_epoch: float = 0.0
     current_loss: Optional[float] = None
     phase: Optional[str] = None
+    checkpoint_path: Optional[str] = None
+    merged_model_path: Optional[str] = None
+    error_message: Optional[str] = None
     created_at: datetime
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None

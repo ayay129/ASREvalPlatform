@@ -59,6 +59,12 @@ export const api = {
   getTrainRunMetrics: (id) =>
     http.get(`/train-runs/${id}/metrics`).then(r => r.data),
 
+  deleteTrainRun: (id) =>
+    http.delete(`/train-runs/${id}`).then(r => r.data),
+
+  mergeTrainRun: (id) =>
+    http.post(`/train-runs/${id}/merge`).then(r => r.data),
+
   evaluateTrainRun: (id, body) =>
     http.post(`/train-runs/${id}/evaluate`, body).then(r => r.data),
 

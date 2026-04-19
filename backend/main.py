@@ -567,6 +567,158 @@ def get_train_run_metrics(run_id: int, db: Session = Depends(get_db)):
 
 
 # ──────────────────────────────────────
+# 3.4 手动触发 LoRA Merge
+# ──────────────────────────────────────
+
+FINETUNE_DIR = BACKEND_DIR / "whisper" / "finetune"
+MERGE_SCRIPT = FINETUNE_DIR / "merge_lora.py"
+
+
+def _run_merge_task(train_run_id: int) -> None:
+    """
+    后台任务：以 subprocess 运行 merge_lora.py，把 LoRA adapter 合并成完整模型。
+    成功后更新 merged_model_path；失败则写 error_message。
+    """
+    from database import SessionLocal as _SL
+    db = _SL()
+    try:
+        run = db.query(TrainRun).filter(TrainRun.id == train_run_id).first()
+        if not run:
+            return
+
+        run.phase = "merging"
+        db.commit()
+
+        lora_path = run.checkpoint_path
+        # 计算合并输出目录
+        merged_parent = os.path.join(run.output_dir, "merged")
+        os.makedirs(merged_parent, exist_ok=True)
+
+        base_model = (run.base_model or "").rstrip("/")
+        basename = os.path.basename(base_model)
+        merged_model_dir = os.path.join(merged_parent, f"{basename}-finetune")
+
+        cmd = [
+            sys.executable, "-u", str(MERGE_SCRIPT),
+            f"--lora_model={lora_path}",
+            f"--output_dir={merged_parent}",
+            f"--local_files_only={run.local_files_only}",
+        ]
+
+        env = os.environ.copy()
+        env["PYTHONUNBUFFERED"] = "1"
+        if run.gpu_id:
+            env["CUDA_VISIBLE_DEVICES"] = run.gpu_id
+
+        print(f"[MERGE] Running: {' '.join(shlex.quote(c) for c in cmd)}")
+
+        result = subprocess.run(
+            cmd,
+            cwd=str(FINETUNE_DIR),
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=3600,  # 1 小时超时
+        )
+
+        if result.stdout:
+            for line in result.stdout.strip().split("\n")[-15:]:
+                print(f"[MERGE/stdout] {line}")
+        if result.stderr:
+            for line in result.stderr.strip().split("\n")[-15:]:
+                print(f"[MERGE/stderr] {line}")
+
+        if result.returncode != 0:
+            run.phase = "merge_failed"
+            run.error_message = (
+                f"merge_lora.py exited with code {result.returncode}\n"
+                f"{result.stderr[-500:] if result.stderr else ''}"
+            )
+            db.commit()
+            return
+
+        # 验证输出目录存在
+        if not os.path.isdir(merged_model_dir):
+            run.phase = "merge_failed"
+            run.error_message = f"Merge completed but output not found: {merged_model_dir}"
+            db.commit()
+            return
+
+        run.merged_model_path = merged_model_dir
+        run.phase = "done"
+        run.error_message = None
+        db.commit()
+        print(f"[MERGE] Train run #{train_run_id} merged → {merged_model_dir}")
+
+    except Exception as exc:
+        try:
+            run = db.query(TrainRun).filter(TrainRun.id == train_run_id).first()
+            if run:
+                run.phase = "merge_failed"
+                run.error_message = f"merge exception: {exc}"
+                db.commit()
+        except Exception:
+            pass
+        print(f"[MERGE] ERROR for #{train_run_id}: {exc}")
+    finally:
+        db.close()
+
+
+@app.post("/api/train-runs/{train_id}/merge", response_model=TrainRunDetail, tags=["训练"])
+def merge_train_run(
+    train_id: int,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+):
+    """
+    手动触发 LoRA adapter 合并。
+
+    前提：训练已完成且有 checkpoint_path（LoRA adapter 路径）。
+    """
+    run = db.query(TrainRun).filter(TrainRun.id == train_id).first()
+    if not run:
+        raise HTTPException(status_code=404, detail=f"训练任务 {train_id} 不存在")
+    if run.status != "completed":
+        raise HTTPException(status_code=400, detail=f"训练任务尚未完成 (status={run.status})")
+    if not run.checkpoint_path:
+        raise HTTPException(status_code=400, detail="没有找到 LoRA adapter (checkpoint_path 为空)")
+    if not Path(run.checkpoint_path).exists():
+        raise HTTPException(
+            status_code=400,
+            detail=f"LoRA adapter 路径不存在: {run.checkpoint_path}",
+        )
+    if run.phase == "merging":
+        raise HTTPException(status_code=400, detail="正在合并中，请稍候")
+
+    # 清除之前的 merge 错误（允许重试）
+    run.error_message = None
+    run.merged_model_path = None
+    run.phase = "merging"
+    db.commit()
+    db.refresh(run)
+
+    background_tasks.add_task(_run_merge_task, run.id)
+
+    return TrainRunDetail.model_validate(run)
+
+
+@app.delete("/api/train-runs/{train_id}", response_model=MessageResponse, tags=["训练"])
+def delete_train_run(train_id: int, db: Session = Depends(get_db)):
+    """
+    删除训练任务记录。
+    仅允许删除已终止的任务（completed / failed）。
+    """
+    run = db.query(TrainRun).filter(TrainRun.id == train_id).first()
+    if not run:
+        raise HTTPException(status_code=404, detail=f"训练任务 {train_id} 不存在")
+    if run.status in ("queued", "running"):
+        raise HTTPException(status_code=400, detail="不能删除正在排队或运行中的任务")
+    db.delete(run)
+    db.commit()
+    return MessageResponse(message=f"训练任务 #{train_id} 已删除")
+
+
+# ──────────────────────────────────────
 # 3.5 从训练任务一键发起推理评测
 # ──────────────────────────────────────
 

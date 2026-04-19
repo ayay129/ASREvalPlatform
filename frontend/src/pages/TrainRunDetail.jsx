@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
-import { ArrowLeft, RefreshCw, Terminal, Activity, FlaskConical, X } from 'lucide-react'
+import { ArrowLeft, RefreshCw, Terminal, Activity, FlaskConical, GitMerge, X } from 'lucide-react'
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
 } from 'recharts'
@@ -22,6 +22,7 @@ export default function TrainRunDetail() {
   const [error, setError] = useState('')
   const [autoScroll, setAutoScroll] = useState(true)
   const [showEvalModal, setShowEvalModal] = useState(false)
+  const [merging, setMerging] = useState(false)
   const logBoxRef = useRef(null)
 
   const load = useCallback(async () => {
@@ -43,10 +44,11 @@ export default function TrainRunDetail() {
 
   useEffect(() => { load() }, [load])
 
-  // 在运行阶段每 2s 刷新一次
+  // 在运行阶段或 merging 阶段每 2s 刷新一次
   useEffect(() => {
     if (!run) return
-    if (run.status !== 'running' && run.status !== 'queued') return
+    const isActive = run.status === 'running' || run.status === 'queued' || run.phase === 'merging'
+    if (!isActive) return
     const t = setInterval(load, 2000)
     return () => clearInterval(t)
   }, [run, load])
@@ -100,6 +102,31 @@ export default function TrainRunDetail() {
           </div>
         </div>
         <div style={{ display: 'flex', gap: 10 }}>
+          {run.status === 'completed' && run.checkpoint_path && !run.merged_model_path && run.phase !== 'merging' && (
+            <button
+              onClick={async () => {
+                if (!confirm('Merge LoRA adapter into full model?')) return
+                setMerging(true)
+                try {
+                  await api.mergeTrainRun(run.id)
+                  load()
+                } catch (err) {
+                  alert(err.response?.data?.detail || 'Merge failed')
+                } finally {
+                  setMerging(false)
+                }
+              }}
+              disabled={merging}
+              style={mergeBtn}
+            >
+              <GitMerge size={15} /> {merging ? 'Merging...' : 'Merge Model'}
+            </button>
+          )}
+          {run.phase === 'merging' && (
+            <span style={{ ...mergeBtn, opacity: 0.7, cursor: 'default' }}>
+              <GitMerge size={15} /> Merging...
+            </span>
+          )}
           {run.status === 'completed' && run.merged_model_path && (
             <button onClick={() => setShowEvalModal(true)} style={evalBtn}>
               <FlaskConical size={15} /> Evaluate
@@ -495,6 +522,14 @@ const errorBox = {
   color: COLORS.danger,
   fontSize: 13,
   whiteSpace: 'pre-wrap',
+}
+
+const mergeBtn = {
+  display: 'flex', alignItems: 'center', gap: 6,
+  padding: '8px 16px', borderRadius: 8,
+  border: `1px solid ${COLORS.secondary2}`,
+  background: COLORS.secondary2, color: '#fff',
+  cursor: 'pointer', fontSize: 13, fontWeight: 600,
 }
 
 const evalBtn = {

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { PlusCircle, RefreshCw } from 'lucide-react'
+import { PlusCircle, RefreshCw, Trash2 } from 'lucide-react'
 import { api } from '../api'
 import { COLORS } from '../theme'
 import StatusBadge from '../components/StatusBadge'
@@ -33,6 +33,17 @@ export default function TrainRuns() {
   useEffect(() => {
     load()
   }, [load])
+
+  const handleDelete = async (id, e) => {
+    e.stopPropagation()
+    if (!confirm('Delete this training run?')) return
+    try {
+      await api.deleteTrainRun(id)
+      load()
+    } catch (err) {
+      alert(err.response?.data?.detail || 'Failed to delete')
+    }
+  }
 
   useEffect(() => {
     const hasActive = runs.some(run => run.status === 'queued' || run.status === 'running')
@@ -93,19 +104,19 @@ export default function TrainRuns() {
         <table style={{ width: '100%', borderCollapse: 'collapse' }}>
           <thead>
             <tr style={{ background: COLORS.secondary1 + '60' }}>
-              {['ID', 'Name', 'Base Model', 'Train Data', 'Test Data', 'Status', 'Created'].map(h => (
-                <th key={h} style={th}>{h}</th>
+              {['ID', 'Name', 'Base Model', 'Train Data', 'Test Data', 'Status', 'Created', ''].map(h => (
+                <th key={h || '_actions'} style={th}>{h}</th>
               ))}
             </tr>
           </thead>
           <tbody>
             {loading ? (
               <tr>
-                <td colSpan={7} style={emptyCell}>Loading…</td>
+                <td colSpan={8} style={emptyCell}>Loading…</td>
               </tr>
             ) : runs.length === 0 ? (
               <tr>
-                <td colSpan={7} style={emptyCell}>No training runs yet</td>
+                <td colSpan={8} style={emptyCell}>No training runs yet</td>
               </tr>
             ) : runs.map((run, index) => (
               <tr
@@ -129,6 +140,17 @@ export default function TrainRuns() {
                   )}
                 </td>
                 <td style={{ ...td, color: COLORS.textLight, fontSize: 12 }}>{fmtDate(run.created_at)}</td>
+                <td style={td}>
+                  {(run.status === 'failed' || run.status === 'completed') && (
+                    <button
+                      onClick={e => handleDelete(run.id, e)}
+                      style={deleteBtn}
+                      title="Delete"
+                    >
+                      <Trash2 size={14} />
+                    </button>
+                  )}
+                </td>
               </tr>
             ))}
           </tbody>
@@ -187,6 +209,12 @@ const errorBox = {
   border: `1px solid ${COLORS.danger}40`,
   color: COLORS.danger,
   fontSize: 13,
+}
+
+const deleteBtn = {
+  background: 'none', border: 'none', cursor: 'pointer',
+  color: COLORS.danger, display: 'flex', alignItems: 'center',
+  padding: 4, borderRadius: 4,
 }
 
 function btnStyle(bg, outline = false) {
